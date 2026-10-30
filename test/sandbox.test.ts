@@ -104,18 +104,12 @@ test(
   },
   async (context) => {
     const directory = await mkdtemp(join(tmpdir(), 'agentgate short alias fixture-'));
-    // Fixed native API bridge; the generated fixture path is an environment value, never shell text.
-    const script = `Add-Type -TypeDefinition 'using System; using System.Text; using System.Runtime.InteropServices; public class AgentGateShortPath { [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern uint GetShortPathName(string path, StringBuilder output, uint size); }'; $buffer = New-Object Text.StringBuilder 32768; $length = [AgentGateShortPath]::GetShortPathName($env:AGENTGATE_SHORT_PATH, $buffer, 32768); if ($length -eq 0) { exit 1 }; [Console]::Out.Write($buffer.ToString())`;
+    // Read-only fixed command: only a controller-generated fixture path enters via the environment.
+    const script = 'for %I in ("%AGENTGATE_SHORT_PATH%") do @echo %~sI';
     try {
       const result = spawnSync(
-        join(
-          process.env.SystemRoot ?? 'C:\\Windows',
-          'System32',
-          'WindowsPowerShell',
-          'v1.0',
-          'powershell.exe',
-        ),
-        ['-NoProfile', '-NonInteractive', '-Command', script],
+        join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'cmd.exe'),
+        ['/d', '/s', '/c', script],
         {
           env: {
             SystemRoot: process.env.SystemRoot,
@@ -126,16 +120,17 @@ test(
           encoding: 'utf8',
           shell: false,
           windowsHide: true,
-          timeout: 20_000,
+          windowsVerbatimArguments: true,
+          timeout: 10_000,
         },
       );
       assert.equal(result.status, 0, result.error?.message ?? result.stderr);
       const shortPath = result.stdout.trim();
+      assert.equal(await realpath(shortPath), await realpath(directory));
       if (!shortPath.includes('~')) {
         context.skip('This filesystem does not generate DOS 8.3 aliases.');
         return;
       }
-      assert.equal(await realpath(shortPath), await realpath(directory));
       const workspace = join(shortPath, 'workspace');
       await mkdir(workspace);
       const session = await createSandboxSession(join(shortPath, 'home'), workspace, true);
