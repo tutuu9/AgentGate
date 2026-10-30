@@ -1,0 +1,46 @@
+name: Native Linux isolation
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Codex 0.154.0 / native Ubuntu
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Install pinned native Codex without authentication
+        run: |
+          npm install --prefix "$RUNNER_TEMP/agentgate-codex" --no-save --ignore-scripts --no-audit --no-fund @openai/codex@0.154.0
+          mapfile -d '' candidates < <(find "$RUNNER_TEMP/agentgate-codex/node_modules/@openai" -type f -name codex -perm -u=x -print0)
+          if [[ ${#candidates[@]} != 1 ]]; then
+            echo 'Expected exactly one executable native Codex binary.' >&2
+            exit 1
+          fi
+          printf 'AGENTGATE_CODEX_PATH=%s\n' "$(realpath "${candidates[0]}")" >> "$GITHUB_ENV"
+      - name: Record the native environment
+        run: |
+          uname -a
+          cat /etc/os-release
+          node --version
+          "$AGENTGATE_CODEX_PATH" --version
+          git rev-parse HEAD
+      - name: Verify native filesystem and network isolation without a model
+        run: node test/manual/verify-isolation.ts "$AGENTGATE_CODEX_PATH"
+      - name: Verify offline Node and TypeScript checks without a model
+        run: node test/manual/verify-toolchain.ts "$AGENTGATE_CODEX_PATH"

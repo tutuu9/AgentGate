@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import {
   CODEX_VERSION,
+  CodexSandbox,
   createSandboxSession,
   isolatedEnvironment,
   type SandboxSession,
@@ -18,7 +19,7 @@ import { hasUncertainTermination } from '../../src/core/errors.ts';
 import { cleanTerminal, redact } from '../../src/core/safety.ts';
 import { FileRunStore } from '../../src/core/store.ts';
 
-// Manual only: npm test excludes this directory. No model, login, or real credential calls.
+// Manual only: npm test excludes this directory. No model or login; doctor checks absent auth.
 // State homes are retained for diagnostics; cleanup removes only owned fixtures and sessions.
 const credentials =
   'GH_TOKEN GITHUB_TOKEN OPENAI_API_KEY CODEX_API_KEY ANTHROPIC_API_KEY SSH_AUTH_SOCK'.split(' ');
@@ -392,6 +393,8 @@ async function main(): Promise<void> {
       );
       if (result.exitCode !== 0 || !version)
         throw new Error('Candidate version unavailable; raw output discarded.');
+      if (version[1] !== CODEX_VERSION)
+        throw new Error(`Native acceptance requires the adapter's pinned Codex ${CODEX_VERSION}.`);
       const mode = session.configArgs.find((value) => value.startsWith('windows.sandbox='));
       emit({
         phase: 'environment',
@@ -408,6 +411,37 @@ async function main(): Promise<void> {
         modelInvoked: false,
       });
     });
+    const doctor = await new CodexSandbox({ home, codexPath }).doctor(abort.signal);
+    const requiredChecks = [
+      'codex-version',
+      'codex-integrations',
+      'codex-mcp',
+      'sandbox-interface',
+      'sandbox-read',
+      'sandbox-read-network',
+      'sandbox-write',
+      'sandbox-write-network',
+    ];
+    const authentication = doctor.filter((check) => check.name === 'codex-auth');
+    const unauthenticated = authentication.length === 1 && !authentication[0]!.ok;
+    const isolationVerified =
+      requiredChecks.every(
+        (name) => doctor.filter((check) => check.name === name && check.ok).length === 1,
+      ) && doctor.length === requiredChecks.length + 1;
+    emit({
+      phase: 'doctor',
+      checks: doctor,
+      unauthenticated,
+      isolationVerified,
+      workflowAuthorized: false,
+      modelInvoked: false,
+    });
+    if (!unauthenticated)
+      throw new Error('No-auth acceptance requires a fresh profile without authenticated access.');
+    if (!isolationVerified)
+      throw new Error(
+        'Required native prerequisite, filesystem, or network evidence is unavailable.',
+      );
     const root = await fixture(join(home, 'runtime'), 'extended-probe-');
     fixtures.push(root);
     const outside = await fixture(temporary, 'agentgate-outside-probe-');

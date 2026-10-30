@@ -188,6 +188,64 @@ test('rejected plan never starts implementation or publication', async (t) => {
   assert.equal(f.state.publishCalls, 0);
 });
 
+test('feedback produces a revised plan that still needs explicit approval before implementation', async (t) => {
+  const f = await fixture();
+  t.after(f.dispose);
+  const feedback = 'Limit the change to src/service.ts and preserve the public API.';
+  const revisedObjective = 'Fix the service without changing its public API';
+  const original = f.agent.run.bind(f.agent);
+  f.agent.run = async <S extends AgentStage>(
+    stage: S,
+    context: AgentContext,
+    signal?: AbortSignal,
+  ): Promise<AgentResultMap[S]> => {
+    if (stage === 'implement') {
+      assert.equal(f.state.planPrompts, 3);
+      assert.equal(context.run.plan?.objective, revisedObjective);
+      assert.ok(context.run.planApproval);
+    }
+    const result = await original(stage, context, signal);
+    if (stage !== 'plan' || !context.feedback) return result;
+    assert.equal(context.feedback, feedback);
+    return {
+      ...result,
+      objective: revisedObjective,
+      steps: ['Correct the return value without changing the exported signature'],
+      allowedPaths: ['src/service.ts'],
+      acceptanceCriteria: ['Unit checks pass'],
+      risks: [],
+    };
+  };
+  f.ui.approvePlan = async (run) => {
+    f.state.planPrompts += 1;
+    assert.equal(run.planApproval, undefined);
+    if (f.state.planPrompts === 1) return { feedback };
+    assert.equal(run.plan?.objective, revisedObjective);
+    assert.deepEqual(run.plan?.allowedPaths, ['src/service.ts']);
+    return 'reject';
+  };
+
+  const rejected = await f.start();
+  assert.equal(rejected.status, 'cancelled');
+  assert.equal(rejected.planApproval, undefined);
+  assert.equal(f.state.planPrompts, 2);
+  assert.deepEqual(f.state.stages, ['plan', 'plan']);
+  assert.equal(f.state.checkCalls, 0);
+  assert.equal(f.state.publishCalls, 0);
+  assert.equal((await f.store.getRun(rejected.id)).plan?.objective, revisedObjective);
+
+  f.ui.approvePlan = async (run) => {
+    f.state.planPrompts += 1;
+    assert.equal(run.planApproval, undefined);
+    assert.equal(run.plan?.objective, revisedObjective);
+    return 'approve';
+  };
+  const resumed = await f.workflow.resume(rejected.id);
+  assert.equal(resumed.status, 'completed', resumed.message);
+  assert.equal(f.state.planPrompts, 3);
+  assert.deepEqual(f.state.stages, ['plan', 'plan', 'implement', 'review']);
+});
+
 test('dependencies require user readiness before implementation', async (t) => {
   const f = await fixture();
   t.after(f.dispose);
@@ -208,6 +266,44 @@ test('a failed check gets one repair and a fresh set of checks', async (t) => {
   assert.equal(run.repairAttempts, 1);
   assert.equal(f.state.checkCalls, 2);
   assert.deepEqual(f.state.stages, ['plan', 'implement', 'implement', 'review']);
+});
+
+test('a successful check that changes source blocks review and publication until a fresh check', async (t) => {
+  const f = await fixture();
+  t.after(f.dispose);
+  const original = f.sandbox.check.bind(f.sandbox);
+  f.sandbox.check = async (...args) => {
+    const result = await original(...args);
+    f.state.tree = 'tree-changed-by-check';
+    return result;
+  };
+
+  const blocked = await f.start();
+  assert.equal(blocked.status, 'blocked');
+  assert.match(blocked.message ?? '', /Checks changed source files/);
+  assert.equal(blocked.checkpoint, 'check');
+  assert.equal(blocked.checkedTree, undefined);
+  assert.deepEqual(blocked.checks, []);
+  assert.equal(blocked.review, undefined);
+  assert.equal(blocked.candidateCommit, undefined);
+  assert.equal(blocked.publicationApproval, undefined);
+  assert.equal(blocked.repairAttempts, 0);
+  assert.deepEqual(f.state.stages, ['plan', 'implement']);
+  assert.equal(f.state.checkCalls, 1);
+  assert.equal(f.state.publicationPrompts, 0);
+  assert.equal(f.state.publishCalls, 0);
+  assert.equal((await f.store.getRun(blocked.id)).status, 'blocked');
+
+  f.sandbox.check = original;
+  f.state.approvePublish = false;
+  const resumed = await f.workflow.resume(blocked.id);
+  assert.equal(resumed.status, 'awaiting_publish', resumed.message);
+  assert.equal(resumed.candidateCommit, 'commit-tree-changed-by-check');
+  assert.equal(resumed.repairAttempts, 0);
+  assert.equal(f.state.checkCalls, 2);
+  assert.equal(f.state.reviewCalls, 1);
+  assert.deepEqual(f.state.stages, ['plan', 'implement', 'review']);
+  assert.equal(f.state.publishCalls, 0);
 });
 
 test('repair budget persists across resume and cannot create a retry loop', async (t) => {
