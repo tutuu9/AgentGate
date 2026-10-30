@@ -13,6 +13,8 @@ export interface ExecuteOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   maxOutputBytes?: number;
+  /** Linux sandbox seccomp rejects socket inspection; supply real pipes instead of socketpairs. */
+  linuxPipeTransport?: boolean;
 }
 
 export interface ExecuteResult {
@@ -24,6 +26,23 @@ export interface ExecuteResult {
 
 export type Executor = (options: ExecuteOptions) => Promise<ExecuteResult>;
 export type ProcessFailure = 'spawn' | 'timeout' | 'aborted' | 'output-limit' | 'termination';
+
+// Only fixed trusted code is interpreted. The selected executable and every argument remain
+// positional parameters. Wait for both output relays before the group leader exits.
+const LINUX_PIPE_TRANSPORT = `
+exec 3>&1 4>&2
+exec 5> >(/usr/bin/cat >&4 3>&- 4>&-)
+stderr_pid=$!
+/usr/bin/cat 3>&- 4>&- 5>&- | "$@" 2>&5 3>&- 4>&- 5>&- | /usr/bin/cat >&3 3>&- 4>&- 5>&-
+statuses=("\${PIPESTATUS[@]}")
+exec 5>&-
+wait "$stderr_pid"
+stderr_status=$?
+if (( statuses[2] != 0 || stderr_status != 0 || (statuses[0] != 0 && statuses[0] != 141) )); then
+  exit 125
+fi
+exit "\${statuses[1]}"
+`;
 
 export class ProcessError extends Error {
   readonly kind: ProcessFailure;
@@ -184,7 +203,27 @@ export async function execute(options: ExecuteOptions): Promise<ExecuteResult> {
     throw new ProcessError('spawn', 'Process limits must be positive safe integers.');
   }
   if (options.signal?.aborted) throw new ProcessError('aborted', 'Process cancelled.');
-  const resolved = await resolveCommand(options.command, options.args, options.env, options.cwd);
+  let resolved = await resolveCommand(options.command, options.args, options.env, options.cwd);
+  if (process.platform === 'linux' && options.linuxPipeTransport) {
+    await resolveCommand('/usr/bin/cat', [], options.env, options.cwd);
+    // Privileged mode suppresses BASH_ENV, imported functions and shell-option injection;
+    // it does not grant privileges or change the controller's user.
+    resolved = await resolveCommand(
+      '/bin/bash',
+      [
+        '--noprofile',
+        '--norc',
+        '-p',
+        '-c',
+        LINUX_PIPE_TRANSPORT,
+        'agentgate-pipes',
+        resolved.command,
+        ...resolved.args,
+      ],
+      options.env,
+      options.cwd,
+    );
+  }
   if (options.signal?.aborted) throw new ProcessError('aborted', 'Process cancelled.');
   const started = performance.now();
   return new Promise<ExecuteResult>((resolveResult, reject) => {

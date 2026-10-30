@@ -180,7 +180,9 @@ function connect(host, port) { return new Promise(resolve => {
     loopback4: await connect('127.0.0.1', p.port4), loopback6: await connect('::1', p.port6),
     credentials: p.credentials.some(name => Boolean(process.env[name]))
   };
-  if (p.child) return console.log(JSON.stringify(observations));
+  // This nested Node spawn creates socketpairs inside seccomp; report on the descriptor
+  // directly because Node's console socket classification needs denied network syscalls.
+  if (p.child) return fs.writeSync(1, JSON.stringify(observations) + '\n');
   const child = spawnSync(process.execPath, ['-e', process.argv[2], JSON.stringify({...p,child:true}), process.argv[2]], {
     shell: false, windowsHide: true, encoding: 'utf8', timeout: 6000, maxBuffer: 8192
   });
@@ -278,6 +280,7 @@ async function runStage(
     let stopped = false;
     const execution = execute({
       command: session.codexExecutable ?? codexPath,
+      linuxPipeTransport: true,
       args: [
         ...session.configArgs,
         'sandbox',
@@ -377,6 +380,17 @@ async function verifyCommandTransport(codexPath: string, home: string): Promise<
           stderr: 'agentgate-fd2-marker\n',
         },
         {
+          name: 'node-pipe-descriptors',
+          command: process.execPath,
+          args: [
+            '-e',
+            "const fs=require('node:fs');console.log(JSON.stringify([0,1,2].map(fd=>fs.fstatSync(fd).isFIFO())))",
+          ],
+          exitCode: 0,
+          stdout: '[true,true,true]\n',
+          stderr: '',
+        },
+        {
           name: 'node-stdout',
           command: process.execPath,
           args: ['-e', "console.log('agentgate-node-marker')"],
@@ -408,6 +422,7 @@ async function verifyCommandTransport(codexPath: string, home: string): Promise<
       for (const command of commands) {
         const result = await execute({
           command: session.codexExecutable ?? codexPath,
+          linuxPipeTransport: true,
           args: [
             ...session.configArgs,
             'sandbox',
@@ -448,12 +463,14 @@ for (const fd of [1, 2]) {
   emit({fd, fifo: info.isFIFO(), socket: info.isSocket(), characterDevice: info.isCharacterDevice(), procDescriptorVisible: fs.existsSync('/proc/self/fd/' + fd)});
 }
 for (const [name, stream] of [['stdout', process.stdout], ['stderr', process.stderr]]) {
+  emit({name, constructor: stream.constructor.name, type: stream._type ?? null});
   stream.on('error', error => emit({name, event: 'error', error: failure(error)}));
   stream.write('agentgate-stream-marker\n', error => emit({name, event: 'callback', error: failure(error)}));
 }
 setTimeout(() => emit({event: 'settled', stdoutError: failure(process.stdout.errored), stderrError: failure(process.stderr.errored)}), 250);`;
         const result = await execute({
           command: session.codexExecutable ?? codexPath,
+          linuxPipeTransport: true,
           args: [
             ...session.configArgs,
             'sandbox',

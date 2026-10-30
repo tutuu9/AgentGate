@@ -521,6 +521,7 @@ export class CodexSandbox implements SandboxRunner {
           signal?.throwIfAborted();
           const result = await this.executor({
             command: session.codexExecutable ?? this.codexPath,
+            linuxPipeTransport: true,
             args: [
               ...session.configArgs,
               'sandbox',
@@ -642,6 +643,7 @@ export class CodexSandbox implements SandboxRunner {
       const trampoline = `const {spawn}=require('node:child_process');const [cwd,cmd,...args]=process.argv.slice(1);process.chdir(cwd);const p=spawn(cmd,args,{shell:false,stdio:'inherit',windowsHide:true});p.on('error',()=>process.exit(127));p.on('exit',(code)=>process.exit(code??1));`;
       const result = await this.executor({
         command: session.codexExecutable ?? this.codexPath,
+        linuxPipeTransport: true,
         args: [
           ...session.configArgs,
           'sandbox',

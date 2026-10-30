@@ -123,6 +123,7 @@ async function runCheck(codexPath: string, home: string, workspace: string, name
     const trampoline = `const {spawn}=require('node:child_process');const [cwd,cmd,...args]=process.argv.slice(1);process.chdir(cwd);const p=spawn(cmd,args,{shell:false,stdio:'inherit',windowsHide:true});p.on('error',()=>process.exit(127));p.on('exit',(code)=>process.exit(code??1));`;
     return await execute({
       command: session.codexExecutable ?? codexPath,
+      linuxPipeTransport: true,
       args: [
         ...session.configArgs,
         'sandbox',
@@ -196,6 +197,7 @@ setTimeout(()=>process.exit(0),30000);`;
   let uncertain = false;
   const execution = execute({
     command: session.codexExecutable ?? codexPath,
+    linuxPipeTransport: true,
     args: [
       ...session.configArgs,
       'sandbox',

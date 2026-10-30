@@ -186,3 +186,193 @@ test(
     await assert.rejects(resolveCommand('arbitrary.cmd', []), ProcessError);
   },
 );
+
+test(
+  'Linux pipe transport gives the command three FIFO descriptors',
+  { skip: process.platform !== 'linux' },
+  async () => {
+    const result = await execute({
+      command: process.execPath,
+      args: [
+        '-e',
+        `const fs=require('node:fs');process.stdout.write(JSON.stringify([0,1,2].map(fd=>({fifo:fs.fstatSync(fd).isFIFO(),socket:fs.fstatSync(fd).isSocket()}))));`,
+      ],
+      linuxPipeTransport: true,
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, '');
+    assert.deepEqual(
+      JSON.parse(result.stdout),
+      Array.from({ length: 3 }, () => ({ fifo: true, socket: false })),
+    );
+  },
+);
+
+test(
+  'Linux pipe transport preserves large stdin, separate outputs, literal argv, and exit status',
+  { skip: process.platform !== 'linux' },
+  async () => {
+    const args = ['', ' spaced ', '$(echo unsafe); & | > < ` "\nUnicode: Тарас', '--flag=value'];
+    const input = 'stdin Unicode Тарас; $(echo ignored)\n'.repeat(8192);
+    const stdoutTail = 'o'.repeat(512 * 1024);
+    const stderr = 'e'.repeat(768 * 1024);
+    const result = await execute({
+      command: process.execPath,
+      args: [
+        '-e',
+        `process.stdout.write(JSON.stringify(process.argv.slice(1))+'\\n');
+process.stderr.write('e'.repeat(768*1024));
+const chunks=[];process.stdin.on('data',chunk=>chunks.push(chunk));
+process.stdin.on('end',()=>{process.stdout.write(Buffer.concat(chunks));process.stdout.write('o'.repeat(512*1024));process.stderr.write('tail');process.exitCode=37;});`,
+        ...args,
+      ],
+      input,
+      timeoutMs: 10_000,
+      linuxPipeTransport: true,
+    });
+    assert.equal(result.exitCode, 37);
+    assert.equal(result.stdout, `${JSON.stringify(args)}\n${input}${stdoutTail}`);
+    assert.equal(result.stderr, `${stderr}tail`);
+  },
+);
+
+test(
+  'Linux pipe transport ignores injected Bash startup files and shell options',
+  { skip: process.platform !== 'linux' },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-pipe-env-'));
+    const startup = join(directory, 'startup.sh');
+    const marker = join(directory, 'injected.txt');
+    await writeFile(
+      startup,
+      'printf injected > "$AGENTGATE_INJECTION_MARKER"\nprintf unwanted-output\n',
+    );
+    try {
+      const result = await execute({
+        command: process.execPath,
+        args: [
+          '-e',
+          'process.stdout.write(JSON.stringify({uid:process.getuid(),euid:process.geteuid()}));',
+        ],
+        env: {
+          PATH: '/usr/bin:/bin',
+          BASH_ENV: startup,
+          ENV: startup,
+          SHELLOPTS: 'xtrace',
+          BASHOPTS: 'expand_aliases',
+          'BASH_FUNC_wait%%':
+            '() { printf injected > "$AGENTGATE_INJECTION_MARKER"; builtin wait "$@"; }',
+          AGENTGATE_INJECTION_MARKER: marker,
+        },
+        linuxPipeTransport: true,
+      });
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stderr, '');
+      assert.deepEqual(JSON.parse(result.stdout), {
+        uid: process.getuid!(),
+        euid: process.geteuid!(),
+      });
+      await assert.rejects(
+        readFile(marker),
+        (error: unknown) => error instanceof Error && 'code' in error && error.code === 'ENOENT',
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'Linux pipe transport preserves early child exit despite unread large input',
+  { skip: process.platform !== 'linux' },
+  async () => {
+    const result = await execute({
+      command: process.execPath,
+      args: ['-e', 'process.stdin.destroy();process.stdout.write("early");process.exitCode=9;'],
+      input: 'x'.repeat(2 * 1024 * 1024),
+      timeoutMs: 10_000,
+      maxOutputBytes: 1024,
+      linuxPipeTransport: true,
+    });
+    assert.equal(result.exitCode, 9);
+    assert.equal(result.stdout, 'early');
+    assert.equal(result.stderr, '');
+  },
+);
+
+async function linuxDescendantStopped(pid: number): Promise<boolean> {
+  try {
+    const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+    // A killed orphan may await reaping by init; a zombie cannot execute or keep writing.
+    return ['Z', 'X'].includes(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0]!);
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return true;
+    throw error;
+  }
+}
+
+for (const reason of ['output-limit', 'aborted', 'timeout'] as const) {
+  test(
+    `Linux pipe transport ${reason} stops the owned descendant`,
+    { skip: process.platform !== 'linux' },
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'agentgate-pipe-stop-'));
+      const marker = join(directory, 'heartbeat.json');
+      const child = `const fs=require('node:fs');const [marker,reason]=process.argv.slice(1);let counter=0;
+setInterval(()=>{fs.writeFileSync(marker,JSON.stringify({pid:process.pid,counter:++counter}));if(reason==='output-limit'&&counter===3){process.stdout.write('a'.repeat(2048));process.stderr.write('b'.repeat(2048));}},25);
+setTimeout(()=>process.exit(0),30000);`;
+      const parent = `const {spawn}=require('node:child_process');const [marker,reason,script]=process.argv.slice(1);
+spawn(process.execPath,['-e',script,marker,reason],{shell:false,stdio:'inherit'});setTimeout(()=>process.exit(0),30000);`;
+      const abort = new AbortController();
+      const running = execute({
+        command: process.execPath,
+        args: ['-e', parent, marker, reason, child],
+        signal: abort.signal,
+        timeoutMs: reason === 'timeout' ? 2000 : 10_000,
+        maxOutputBytes: reason === 'output-limit' ? 3000 : 8192,
+        linuxPipeTransport: true,
+      }).then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error }),
+      );
+      let stopped = false;
+      try {
+        let pid: number | undefined;
+        for (let index = 0; index < 200 && pid === undefined; index++) {
+          try {
+            const heartbeat = JSON.parse(await readFile(marker, 'utf8')) as {
+              pid: number;
+              counter: number;
+            };
+            if (Number.isSafeInteger(heartbeat.pid) && heartbeat.pid > 0 && heartbeat.counter >= 2)
+              pid = heartbeat.pid;
+          } catch (error) {
+            if (
+              !(error instanceof SyntaxError) &&
+              !(error instanceof Error && 'code' in error && error.code === 'ENOENT')
+            )
+              throw error;
+          }
+          if (pid === undefined) await delay(20);
+        }
+        assert.ok(pid, 'The descendant must be running before termination is tested.');
+        if (reason === 'aborted') abort.abort();
+        const outcome = await running;
+        assert.ok('error' in outcome && outcome.error instanceof ProcessError);
+        assert.equal(outcome.error.kind, reason);
+        for (let index = 0; index < 100 && !stopped; index++) {
+          stopped = await linuxDescendantStopped(pid);
+          if (!stopped) await delay(20);
+        }
+        assert.ok(stopped, 'The descendant must stop before its safety self-exit.');
+        const heartbeat = await readFile(marker, 'utf8');
+        await delay(150);
+        assert.equal(await readFile(marker, 'utf8'), heartbeat);
+      } finally {
+        abort.abort();
+        await running;
+        if (stopped) await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+}
