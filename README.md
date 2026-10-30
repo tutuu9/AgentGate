@@ -4,7 +4,7 @@ A local TypeScript CLI that takes a selected GitHub Issue through an approved pl
 
 **Status: implementation preview (`0.1.0-dev.0`). No stable release has been declared. Real Codex sandbox and GitHub workflow acceptance is still required.** See the [acceptance record](docs/acceptance.md) for evidence and outstanding checks. Mocked adapter tests do not establish real isolation.
 
-The live Windows attempt with Codex 0.154.0 failed the outside-file read and loopback-network boundaries. AgentGate correctly blocks model execution in that environment. Authentication and successful unit tests do not clear this blocker; a compatible execution boundary must pass the same probes before use.
+Windows uses explicit MXC isolation with networking disabled. The earlier legacy Windows attempt with Codex 0.154.0 failed the outside-file read and loopback-network boundaries; that backend is no longer selected. Every environment must pass the real probes before model execution. See the [acceptance record](docs/acceptance.md) for measured results.
 
 ## The workflow
 
@@ -23,8 +23,8 @@ If draft PRs are unavailable, AgentGate asks again before creating an ordinary P
 
 - Node.js **24** and npm; Git; GitHub CLI (`gh`) authenticated to your own GitHub account.
 - A local repository with an `origin` on `github.com` and permission to push a branch and create a PR. Public and private repositories are supported by the workflow; GitHub account and organization policies still apply.
-- **Codex CLI 0.154.0**, the currently pinned adapter contract, with ChatGPT authentication in a separate AgentGate profile. Other versions fail the compatibility check until explicitly validated.
-- Native Windows or Linux with the required Codex sandbox available. The Windows adapter requests the legacy `elevated` sandbox; its native setup may require administrator approval. AgentGate does not weaken sandbox policy when setup is unavailable.
+- **Codex CLI 0.166.0 on Windows**, or **0.154.0 on Linux**, with ChatGPT authentication in a separate AgentGate profile. Other versions fail the compatibility check until explicitly validated.
+- Native Windows with Microsoft Execution Containers (MXC), or Linux with the required Codex sandbox available. Windows selects MXC explicitly and blocks execution if the device or managed policy cannot support it; there is no legacy fallback. See [MXC compatibility](https://learn.chatgpt.com/docs/windows/windows-sandbox#mxc-compatibility).
 - Dependencies and check tools that can run offline. The preview targets Node.js/TypeScript repositories and one active run per AgentGate state directory.
 
 macOS, GitHub Enterprise hosts, cross-repository forks, hosted workers, webhooks, web UI, and Claude Code are not implemented in this preview.
@@ -73,7 +73,7 @@ CODEX_HOME="$HOME/.agentgate/codex" codex login
 
 For a custom state home, use its `codex` subdirectory instead. Select ChatGPT authentication. AgentGate refuses API-key authentication and has no paid API fallback. Existing subscription limits still apply; AgentGate does not make those limits unlimited or purchase credits.
 
-On Windows, complete native sandbox setup separately in an interactive `codex` session using the same `CODEX_HOME`. Follow the setup flow offered by the installed CLI. The pinned 0.154.0 CLI does not provide a `codex sandbox setup` subcommand. Current [OpenAI documentation](https://learn.chatgpt.com/docs/developer-commands#setup-default-sandbox) describes `/setup-default-sandbox` when the interactive CLI is using its degraded Windows sandbox. The live attempt reached native setup but encountered an ownership error; after recovering the empty helper directory, the required isolation probes still failed. See the [acceptance record](docs/acceptance.md#renewed-windows-attempt-2026-10-30). If native setup or isolation cannot be established, AgentGate remains blocked.
+On Windows, use Codex 0.166.0 on a device that supports MXC. This backend does not require the legacy administrator setup, sandbox users, or firewall provisioning. AgentGate requests `windows.sandbox="mxc"` with networking disabled, including host loopback. Managed networking is not enabled; its different loopback contract would not satisfy these checks. Unsupported native capabilities or policies block execution rather than selecting a legacy backend. The installed CLI can be selected with `AGENTGATE_CODEX_PATH` without changing another Codex installation.
 
 Run the preflight before using a real repository:
 

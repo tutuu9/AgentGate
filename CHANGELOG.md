@@ -11,7 +11,8 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 - Git worktrees, configured offline checks, independent read-only review, and one scoped repair attempt.
 - Persistent run checkpoints, inspection/resume commands, exclusive run locking, and explicit cleanup of completed published runs.
 - GitHub CLI integration for controlled branch push and draft PR creation, with separately confirmed ordinary-PR fallback.
-- A Codex CLI 0.154.0 adapter and fail-closed sandbox preflight, with real-environment acceptance still outstanding.
+- Platform-pinned Codex adapters (0.166.0 on Windows, 0.154.0 on Linux) and fail-closed sandbox preflight.
+- Explicit offline MXC on Windows with no legacy fallback, plus individual observations for failed isolation probes.
 - Explicit model and reasoning-effort options for planning, implementation, and review during `run` and `resume`.
 - Behavior tests using fake providers and temporary repositories, plus Windows/Ubuntu CI configuration.
 

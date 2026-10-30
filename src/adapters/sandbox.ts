@@ -19,7 +19,7 @@ import {
   type Executor,
 } from './process.ts';
 
-export const CODEX_VERSION = '0.154.0';
+export const CODEX_VERSION = process.platform === 'win32' ? '0.166.0' : '0.154.0';
 export const DISABLED_FEATURES = [
   'apps',
   'plugins',
@@ -81,6 +81,10 @@ export function isolatedEnvironment(
     'lang',
     'lc_all',
   ]);
+  if (process.platform === 'win32') {
+    allowed.delete('systemroot');
+    allowed.delete('systemdrive');
+  }
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(source)) {
     if (allowed.has(key.toLowerCase()) && value !== undefined) env[key] = value;
@@ -89,8 +93,19 @@ export function isolatedEnvironment(
   env.HOME = homedir();
   if (process.platform === 'win32') {
     env.USERPROFILE = homedir();
-    // Codex 0.154.0 otherwise targets Administrators during native sandbox ACL refresh.
+    // Keep infrastructure identity tied to the OS, never caller-supplied environment values.
     env.USERNAME = userInfo().username;
+    // MXC reads these from its host environment even when the child environment is explicit.
+    for (const key of ['LOCALAPPDATA', 'SystemRoot']) {
+      const path = process.env[key];
+      if (!path || !isAbsolute(path) || [...path].some((character) => character.charCodeAt(0) < 32))
+        throw new Error(`Windows host ${key} must name a nonempty absolute path.`);
+      env[key] = path;
+    }
+    const systemDrive = process.env.SystemDrive;
+    if (!systemDrive || !/^[a-zA-Z]:$/.test(systemDrive))
+      throw new Error('Windows host SystemDrive must name a drive letter.');
+    env.SystemDrive = systemDrive;
   }
   env.TEMP = temporary;
   env.TMP = temporary;
@@ -163,7 +178,9 @@ export async function createSandboxSession(
     ...config(`${prefix}.network.enabled`, false),
     ...DISABLED_FEATURES.flatMap((feature) => config(`features.${feature}`, false)),
   ];
-  if (process.platform === 'win32') configArgs.push(...config('windows.sandbox', 'elevated'));
+  // Legacy Windows tokens cannot enforce default-deny reads. Explicit MXC fails if unsupported;
+  // unlike prefer_mxc, it never selects a legacy fallback. Disabled networking also denies loopback.
+  if (process.platform === 'win32') configArgs.push(...config('windows.sandbox', 'mxc'));
   return {
     launcher,
     profile,
@@ -421,20 +438,6 @@ export class CodexSandbox implements SandboxRunner {
       const checks = await this.prerequisites(session, signal);
       signal?.throwIfAborted();
       if (checks.some((check) => !check.ok && check.name !== 'codex-auth')) return checks;
-      if (process.platform === 'win32') {
-        const configured = await lstat(join(this.home, 'codex', '.sandbox')).then(
-          (entry) => entry.isDirectory() && !entry.isSymbolicLink(),
-          () => false,
-        );
-        checks.push({
-          name: 'windows-sandbox-setup',
-          ok: configured,
-          detail: configured
-            ? 'Existing sandbox state found; live probes must still verify isolation.'
-            : 'The separate Codex profile has no native sandbox state. Configure the elevated sandbox through native Codex in this profile first; AgentGate never starts administrator setup.',
-        });
-        if (!configured) return checks;
-      }
       checks.push(...(await this.probeIsolation(signal)));
       return checks;
     } catch (error) {
@@ -531,16 +534,16 @@ export class CodexSandbox implements SandboxRunner {
             ok: filesystemOk,
             detail: filesystemOk
               ? 'Live fixture verified workspace permissions, denied fake-secret read, denied outside write, and absent credential environment.'
-              : 'Live fixture failed a filesystem or environment boundary; execution is blocked.',
+              : `Live fixture failed a filesystem or environment boundary; execution is blocked. Observed readWorkspace=${p.readWorkspace}, writeWorkspace=${p.writeWorkspace} (expected ${writable}), readSentinel=${p.readSentinel}, writeOutside=${p.writeOutside}, credentials=${p.credentials}.`,
           });
           checks.push({
             name: writable ? 'sandbox-write-network' : 'sandbox-read-network',
             ok: egressBaseline && !p.loopback && !p.egress,
             detail: !egressBaseline
-              ? 'The controller could not establish the external TCP baseline; network isolation remains unverified.'
+              ? `The controller could not establish the external TCP baseline; network isolation remains unverified. Observed loopback=${p.loopback}, publicEgress=${p.egress}.`
               : !p.loopback && !p.egress
                 ? 'Live probe blocked loopback and public TCP connections; controller baseline was reachable.'
-                : 'The sandbox allowed a network connection; execution is blocked.',
+                : `The sandbox allowed a network connection; execution is blocked. Observed loopback=${p.loopback}, publicEgress=${p.egress}; controller baseline was reachable.`,
           });
         } catch (error) {
           invocationFailed = true;

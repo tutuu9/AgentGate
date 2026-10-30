@@ -72,7 +72,7 @@ GitHub operations run in the controller using the user's native `gh` authorizati
 
 Codex runs with a dedicated profile and a controller-owned launcher outside the target repository. Planning and review receive read-only repository access; implementation and checks receive the profile's restricted worktree write access. Network access for sandboxed tools is disabled. The Codex harness still needs its normal authenticated model connection; “offline checks” does not mean local model inference.
 
-The adapter currently accepts Codex CLI 0.154.0 only, disables external integrations, refuses API-key authentication, and requires live sandbox observations before worker execution. Windows uses the native legacy elevated implementation; Linux uses the supported CLI sandbox interface. Native permissions and managed configuration can make execution unavailable. No failure selects a broader access mode.
+The adapter accepts Codex CLI 0.166.0 on Windows and 0.154.0 on Linux, disables external integrations, refuses API-key authentication, and requires live sandbox observations before worker execution. Windows explicitly selects MXC with networking disabled; Linux uses the supported CLI sandbox interface. MXC's offline policy denies host loopback as well as external networking. Managed networking is not enabled. Missing MXC capabilities or restrictive managed configuration make execution unavailable; there is no automatic legacy fallback. A legacy setup marker is not required or accepted as isolation evidence.
 
 Native isolation and its limitations require real acceptance evidence. Mocked subprocess responses, generated configuration, and prompts alone cannot prove that an operating-system boundary is enforced.
 

@@ -24,7 +24,7 @@ These decisions describe the implementation preview and the agreed first-user wo
 
 **Reason:** Worktrees protect the original checkout's uncommitted work; native permissions are needed to constrain filesystem/network operations. Worktrees alone are not isolation.
 
-**Consequences:** The initial adapter is pinned to Codex CLI 0.154.0. Compatibility must be revalidated before expanding the version set. The preview supports native Windows/Linux paths, requires explicit authentication in a dedicated profile, and has no full-access or paid-API fallback. Docker is not a mandatory dependency. Real isolation acceptance remains a release gate.
+**Consequences:** Windows is pinned to Codex CLI 0.166.0 and explicitly selects offline MXC; Linux retains 0.154.0. The initial Windows 0.154.0 elevated attempt failed read and loopback isolation. Enumerating existing directories or weakening the probes cannot replace a default-deny boundary, so legacy Windows backends are not used. Compatibility must be revalidated before expanding the version set. The preview requires explicit authentication in a dedicated profile and has no full-access or paid-API fallback. Docker is not a mandatory dependency. Real isolation acceptance remains a release gate.
 
 ## ADR 004: Two human approvals and one repair attempt
 

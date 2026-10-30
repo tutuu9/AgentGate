@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readdir, realpath, rm, symlink } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -24,6 +24,7 @@ test('isolated environments exclude credentials, shell options and proxies', () 
     NODE_OPTIONS: '--require fake',
     HTTPS_PROXY: 'https://fake',
     SSH_AUTH_SOCK: '/fake',
+    CODEX_NETWORK_ALLOW_LOCAL_BINDING: '1',
     npm_config_registry: 'https://fake',
   });
   assert.equal(env.PATH, '/bin');
@@ -35,6 +36,7 @@ test('isolated environments exclude credentials, shell options and proxies', () 
     'NODE_OPTIONS',
     'HTTPS_PROXY',
     'SSH_AUTH_SOCK',
+    'CODEX_NETWORK_ALLOW_LOCAL_BINDING',
     'npm_config_registry',
   ])
     assert.equal(env[key], undefined);
@@ -55,6 +57,44 @@ test('Windows sandbox identity comes from the OS rather than caller environment'
   assert.equal(env.CODEX_API_KEY, undefined);
 });
 
+test(
+  'MXC infrastructure uses trusted redirected host paths without caller overrides',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const previousLocalAppData = process.env.LOCALAPPDATA;
+    try {
+      const redirected = 'D:\\Redirected Profiles\\Local Data';
+      process.env.LOCALAPPDATA = redirected;
+      const env = isolatedEnvironment('/agentgate', '/temporary', {
+        LOCALAPPDATA: 'C:\\untrusted-appdata',
+        localappdata: 'C:\\untrusted-lowercase',
+        SystemRoot: 'Z:\\untrusted-windows',
+        SYSTEMDRIVE: 'Z:',
+        APPDATA: 'C:\\unneeded-roaming-profile',
+        GH_TOKEN: 'fake',
+        HTTPS_PROXY: 'http://fake',
+      });
+      assert.equal(env.LOCALAPPDATA, redirected);
+      assert.equal(env.localappdata, undefined);
+      assert.equal(env.SystemRoot, process.env.SystemRoot);
+      assert.equal(env.SystemDrive, process.env.SystemDrive);
+      assert.equal(env.SYSTEMDRIVE, undefined);
+      assert.equal(env.APPDATA, undefined);
+      assert.equal(env.GH_TOKEN, undefined);
+      assert.equal(env.HTTPS_PROXY, undefined);
+      for (const invalid of ['', 'relative-appdata', 'C:\\invalid\npath']) {
+        process.env.LOCALAPPDATA = invalid;
+        assert.throws(() => isolatedEnvironment('/agentgate', '/temporary'), /host LOCALAPPDATA/);
+      }
+      delete process.env.LOCALAPPDATA;
+      assert.throws(() => isolatedEnvironment('/agentgate', '/temporary'), /host LOCALAPPDATA/);
+    } finally {
+      if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = previousLocalAppData;
+    }
+  },
+);
+
 test('session policy separates controller state and grants only the chosen worktree', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'agentgate-policy-'));
   const workspace = join(directory, 'workspace');
@@ -73,6 +113,13 @@ test('session policy separates controller state and grants only the chosen workt
           argument.includes(`${JSON.stringify(codexHome)}="deny"`),
       ),
     );
+    assert.equal(
+      session.configArgs.includes('windows.sandbox="mxc"'),
+      process.platform === 'win32',
+    );
+    assert.ok(!session.configArgs.includes('windows.sandbox="elevated"'));
+    assert.ok(!session.configArgs.includes('windows.sandbox="unelevated"'));
+    assert.ok(!session.configArgs.includes('features.prefer_mxc=true'));
     assert.equal(session.env.GITHUB_TOKEN, undefined);
     await session.cleanup();
     assert.deepEqual(await readdir(workspace), []);
@@ -170,6 +217,7 @@ test(
 function prerequisiteExecutor(
   options: {
     badVersion?: boolean;
+    version?: string;
     enabledFeature?: boolean;
     enabledMcp?: boolean;
     apiAuth?: boolean;
@@ -178,7 +226,7 @@ function prerequisiteExecutor(
   return async ({ args }) => {
     let stdout = '';
     if (args.includes('--version'))
-      stdout = `codex-cli ${options.badVersion ? '999.0.0' : CODEX_VERSION}`;
+      stdout = `codex-cli ${options.badVersion ? '999.0.0' : (options.version ?? CODEX_VERSION)}`;
     else if (args.includes('features'))
       stdout = DISABLED_FEATURES.map(
         (feature) =>
@@ -246,6 +294,59 @@ test('doctor stops immediately on cancellation and propagates uncertain terminat
   }
 });
 
+test('doctor rejects the other platform contract before executing a sandbox command', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-platform-version-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const incompatibleVersion = process.platform === 'win32' ? '0.154.0' : '0.166.0';
+  const commands: string[][] = [];
+  const executor = prerequisiteExecutor({ version: incompatibleVersion });
+  const sandbox = new CodexSandbox({
+    home: directory,
+    executor: async (options) => {
+      commands.push([...options.args]);
+      return executor(options);
+    },
+  });
+  const checks = await sandbox.doctor();
+  assert.equal(checks.find((check) => check.name === 'codex-version')?.ok, false);
+  assert.equal(commands.length, 1);
+  assert.ok(commands[0]!.includes('--version'));
+});
+
+test(
+  'unavailable Windows MXC fails without admin setup or a legacy fallback',
+  { skip: process.platform !== 'win32' },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-mxc-unavailable-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const prerequisites = prerequisiteExecutor();
+    const sandboxCommands: ExecuteOptions[] = [];
+    const sandbox = new CodexSandbox({
+      home: directory,
+      connectivity: async () => true,
+      executor: async (options) => {
+        if (!options.args.includes('sandbox') || options.args.includes('--help'))
+          return prerequisites(options);
+        sandboxCommands.push(options);
+        return {
+          exitCode: 1,
+          stdout: '',
+          stderr: 'error: MXC isolation is unavailable on this host',
+          durationMs: 1,
+        };
+      },
+    });
+    const checks = await sandbox.doctor();
+    assert.equal(checks.find((check) => check.name === 'sandbox-read')?.ok, false);
+    assert.match(checks.find((check) => check.name === 'sandbox-read')!.detail, /MXC.*unavailable/);
+    assert.equal(sandboxCommands.length, 1);
+    assert.ok(sandboxCommands[0]!.args.includes('windows.sandbox="mxc"'));
+    assert.ok(!sandboxCommands[0]!.args.includes('setup'));
+    assert.ok(!checks.some((check) => check.name === 'windows-sandbox-setup'));
+    await assert.rejects(access(join(directory, 'codex', '.sandbox')), { code: 'ENOENT' });
+  },
+);
+
 test('check launches fixed trampoline with separate argv and redacts output', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'agentgate-check-'));
   const worktree = join(directory, 'checkout');
@@ -295,9 +396,9 @@ test('token-like output is redacted without exposing raw credentials', () => {
 
 test('synthetic probe observations fail closed on missing network evidence or forbidden reads', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'agentgate-synthetic-probe-'));
-  await mkdir(join(directory, 'codex', '.sandbox'), { recursive: true });
   const prerequisites = prerequisiteExecutor();
   let exposeSentinel = false;
+  let exposeLoopback = false;
   let baseline = true;
   let probeCalls = 0;
   const sandbox = new CodexSandbox({
@@ -315,9 +416,10 @@ test('synthetic probe observations fail closed on missing network evidence or fo
           writeWorkspace: writable,
           readSentinel: exposeSentinel,
           writeOutside: false,
-          loopback: false,
+          loopback: exposeLoopback,
           egress: false,
           credentials: false,
+          unexpectedPrivateText: 'FAKE_PRIVATE_TEXT_MUST_NOT_REACH_DIAGNOSTICS',
         }),
         stderr: '',
         durationMs: 1,
@@ -332,6 +434,7 @@ test('synthetic probe observations fail closed on missing network evidence or fo
       'Synthetic observations test only the decision logic, not real isolation.',
     );
     assert.equal(probeCalls, 2);
+    await assert.rejects(access(join(directory, 'codex', '.sandbox')), { code: 'ENOENT' });
     baseline = false;
     assert.equal(
       (await sandbox.doctor()).find((check) => check.name === 'sandbox-read-network')?.ok,
@@ -339,10 +442,18 @@ test('synthetic probe observations fail closed on missing network evidence or fo
     );
     baseline = true;
     exposeSentinel = true;
-    assert.equal(
-      (await sandbox.doctor()).find((check) => check.name === 'sandbox-read')?.ok,
-      false,
-    );
+    const failedRead = (await sandbox.doctor()).find((check) => check.name === 'sandbox-read')!;
+    assert.equal(failedRead.ok, false);
+    assert.match(failedRead.detail, /readSentinel=true/);
+    assert.ok(!failedRead.detail.includes('FAKE_PRIVATE_TEXT'));
+    exposeSentinel = false;
+    exposeLoopback = true;
+    const failedNetwork = (await sandbox.doctor()).find(
+      (check) => check.name === 'sandbox-read-network',
+    )!;
+    assert.equal(failedNetwork.ok, false);
+    assert.match(failedNetwork.detail, /loopback=true, publicEgress=false/);
+    assert.ok(!failedNetwork.detail.includes('FAKE_PRIVATE_TEXT'));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
