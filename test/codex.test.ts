@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -104,6 +104,8 @@ test('Codex runner passes task data through stdin and preserves stage permission
     run.planApproval = 'approved';
     await runner.run('implement', { run });
     await runner.run('review', { run, diff: 'diff data' });
+    const canonicalWorktree = await realpath(worktree);
+    const canonicalCodexHome = await realpath(join(directory, 'home', 'codex'));
     assert.equal(captured.length, 3);
     captured.forEach((options, index) => {
       assert.ok(options.args.includes('--ignore-user-config'));
@@ -112,7 +114,7 @@ test('Codex runner passes task data through stdin and preserves stage permission
       assert.ok(
         options.args.some((argument) =>
           argument.includes(
-            `${JSON.stringify(worktree)}=${JSON.stringify(index === 1 ? 'write' : 'read')}`,
+            `${JSON.stringify(canonicalWorktree)}=${JSON.stringify(index === 1 ? 'write' : 'read')}`,
           ),
         ),
       );
@@ -120,7 +122,7 @@ test('Codex runner passes task data through stdin and preserves stage permission
       assert.equal(options.maxOutputBytes, 4 * 1024 * 1024);
       assert.ok(options.input?.includes('$(injection)'));
       assert.ok(!options.args.some((argument) => argument.includes('$(injection)')));
-      assert.equal(options.env?.CODEX_HOME, join(directory, 'home', 'codex'));
+      assert.equal(options.env?.CODEX_HOME, canonicalCodexHome);
       assert.equal(options.env?.GH_TOKEN, undefined);
       assert.notEqual(options.cwd, worktree);
       assert.ok(!options.input?.includes('PRIVATE_REASONING_NEVER_PERSIST'));

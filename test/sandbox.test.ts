@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, rm, symlink } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, readdir, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -44,6 +45,7 @@ test('session policy separates controller state and grants only the chosen workt
   const workspace = join(directory, 'workspace');
   await mkdir(workspace);
   const session = await createSandboxSession(join(directory, 'home'), workspace, true);
+  const codexHome = await realpath(join(directory, 'home', 'codex'));
   try {
     assert.ok(session.configArgs.includes('project_root_markers=[]'));
     assert.ok(session.configArgs.includes('web_search="disabled"'));
@@ -52,8 +54,8 @@ test('session policy separates controller state and grants only the chosen workt
     assert.ok(
       session.configArgs.some(
         (argument) =>
-          argument.includes(JSON.stringify(join(directory, 'home', 'codex'))) &&
-          argument.includes(`${JSON.stringify(join(directory, 'home', 'codex'))}="deny"`),
+          argument.includes(JSON.stringify(codexHome)) &&
+          argument.includes(`${JSON.stringify(codexHome)}="deny"`),
       ),
     );
     assert.equal(session.env.GITHUB_TOKEN, undefined);
@@ -83,10 +85,77 @@ test('sessions reject redirected runtime directories and worktrees before granti
       /real canonical directories/,
     );
     assert.deepEqual(await readdir(outside), []);
+    // A real leaf below a redirected ancestor must also be rejected.
+    await mkdir(join(outside, 'nested'));
+    await assert.rejects(
+      createSandboxSession(join(linkedWorktree, 'nested', 'home')),
+      /real canonical directories/,
+    );
+    assert.deepEqual(await readdir(join(outside, 'nested')), []);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test(
+  'Windows short directory aliases use canonical policy paths without accepting junctions',
+  {
+    skip: process.platform !== 'win32',
+  },
+  async (context) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate short alias fixture-'));
+    // Fixed native API bridge; the generated fixture path is an environment value, never shell text.
+    const script = `Add-Type -TypeDefinition 'using System; using System.Text; using System.Runtime.InteropServices; public class AgentGateShortPath { [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern uint GetShortPathName(string path, StringBuilder output, uint size); }'; $buffer = New-Object Text.StringBuilder 32768; $length = [AgentGateShortPath]::GetShortPathName($env:AGENTGATE_SHORT_PATH, $buffer, 32768); if ($length -eq 0) { exit 1 }; [Console]::Out.Write($buffer.ToString())`;
+    try {
+      const result = spawnSync(
+        join(
+          process.env.SystemRoot ?? 'C:\\Windows',
+          'System32',
+          'WindowsPowerShell',
+          'v1.0',
+          'powershell.exe',
+        ),
+        ['-NoProfile', '-NonInteractive', '-Command', script],
+        {
+          env: {
+            SystemRoot: process.env.SystemRoot,
+            TEMP: tmpdir(),
+            TMP: tmpdir(),
+            AGENTGATE_SHORT_PATH: directory,
+          },
+          encoding: 'utf8',
+          shell: false,
+          windowsHide: true,
+          timeout: 20_000,
+        },
+      );
+      assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+      const shortPath = result.stdout.trim();
+      if (!shortPath.includes('~')) {
+        context.skip('This filesystem does not generate DOS 8.3 aliases.');
+        return;
+      }
+      assert.equal(await realpath(shortPath), await realpath(directory));
+      const workspace = join(shortPath, 'workspace');
+      await mkdir(workspace);
+      const session = await createSandboxSession(join(shortPath, 'home'), workspace, true);
+      try {
+        assert.equal(session.env.CODEX_HOME, await realpath(join(directory, 'home', 'codex')));
+        const canonicalWorkspace = await realpath(workspace);
+        assert.ok(
+          session.configArgs.some((argument) =>
+            argument.includes(`${JSON.stringify(canonicalWorkspace)}="write"`),
+          ),
+        );
+        assert.ok(!session.launcher.includes('~'));
+      } finally {
+        await session.cleanup();
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
 
 function prerequisiteExecutor(
   options: {

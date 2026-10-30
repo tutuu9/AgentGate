@@ -119,7 +119,7 @@ export async function createSandboxSession(
   worktree?: string,
   writable = false,
 ): Promise<SandboxSession> {
-  const root = resolve(home);
+  const root = await canonicalDirectory(resolve(home), true);
   const runtime = join(root, 'runtime');
   for (const owned of [root, runtime, join(root, 'codex')]) {
     await canonicalDirectory(owned, true);
@@ -178,19 +178,31 @@ export async function createSandboxSession(
 
 /** Do not grant or recursively remove a redirected controller directory or worktree. */
 async function canonicalDirectory(path: string, create = false): Promise<string> {
+  // Check every lexical ancestor: realpath alone would silently follow a junction.
+  const parent = dirname(path);
+  if (parent !== path) await canonicalDirectory(parent, create);
   let entry;
   try {
-    entry = await lstat(path);
+    entry = await lstat(path, { bigint: true });
   } catch (error) {
     if (!create || !(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT')
       throw error;
-    await canonicalDirectory(dirname(path), true);
     await mkdir(path, { mode: 0o700 });
-    entry = await lstat(path);
+    entry = await lstat(path, { bigint: true });
   }
-  if (!entry.isDirectory() || entry.isSymbolicLink() || relative(path, await realpath(path)))
+  if (!entry.isDirectory() || entry.isSymbolicLink())
     throw new Error('Sandbox directories must be real canonical directories, without links.');
-  return path;
+  // DOS 8.3 names and case aliases identify the same directory without being links.
+  const canonical = await realpath(path);
+  const canonicalEntry = await lstat(canonical, { bigint: true });
+  if (
+    !canonicalEntry.isDirectory() ||
+    canonicalEntry.isSymbolicLink() ||
+    canonicalEntry.dev !== entry.dev ||
+    canonicalEntry.ino !== entry.ino
+  )
+    throw new Error('Sandbox directory identity changed during validation.');
+  return canonical;
 }
 
 export function diagnostic(error: unknown): string {
