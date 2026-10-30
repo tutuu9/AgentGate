@@ -4,6 +4,8 @@ A local TypeScript CLI that takes a selected GitHub Issue through an approved pl
 
 **Status: implementation preview (`0.1.0-dev.0`). No stable release has been declared. Real Codex sandbox and GitHub workflow acceptance is still required.** See the [acceptance record](docs/acceptance.md) for evidence and outstanding checks. Mocked adapter tests do not establish real isolation.
 
+The live Windows attempt with Codex 0.154.0 failed the outside-file read and loopback-network boundaries. AgentGate correctly blocks model execution in that environment. Authentication and successful unit tests do not clear this blocker; a compatible execution boundary must pass the same probes before use.
+
 ## The workflow
 
 1. Register a local clone and approve its mandatory check commands.
@@ -71,7 +73,7 @@ CODEX_HOME="$HOME/.agentgate/codex" codex login
 
 For a custom state home, use its `codex` subdirectory instead. Select ChatGPT authentication. AgentGate refuses API-key authentication and has no paid API fallback. Existing subscription limits still apply; AgentGate does not make those limits unlimited or purchase credits.
 
-On Windows, complete native sandbox setup separately in an interactive `codex` session using the same `CODEX_HOME`. Follow the setup flow offered by the installed CLI. The pinned 0.154.0 CLI does not provide a `codex sandbox setup` subcommand. Current [OpenAI documentation](https://learn.chatgpt.com/docs/developer-commands#setup-default-sandbox) describes `/setup-default-sandbox` when the interactive CLI is using its degraded Windows sandbox; that slash-command flow has not yet been exercised in this project's acceptance record. If native setup cannot complete, AgentGate remains blocked.
+On Windows, complete native sandbox setup separately in an interactive `codex` session using the same `CODEX_HOME`. Follow the setup flow offered by the installed CLI. The pinned 0.154.0 CLI does not provide a `codex sandbox setup` subcommand. Current [OpenAI documentation](https://learn.chatgpt.com/docs/developer-commands#setup-default-sandbox) describes `/setup-default-sandbox` when the interactive CLI is using its degraded Windows sandbox. The live attempt reached native setup but encountered an ownership error; after recovering the empty helper directory, the required isolation probes still failed. See the [acceptance record](docs/acceptance.md#renewed-windows-attempt-2026-10-30). If native setup or isolation cannot be established, AgentGate remains blocked.
 
 Run the preflight before using a real repository:
 
