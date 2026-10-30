@@ -2,7 +2,7 @@
 
 A local TypeScript CLI that takes a selected GitHub Issue through an approved plan, isolated coding work, checks, review, and a separately approved pull request.
 
-**Status: implementation preview (`0.1.0-dev.0`). No stable release has been declared. Real Codex sandbox and GitHub workflow acceptance is still required.** See the [acceptance record](docs/acceptance.md) for evidence and outstanding checks. Mocked adapter tests do not establish real isolation.
+**Status: implementation preview (`0.1.0-dev.0`). A real Windows MXC Issue-to-draft-PR test passed; Linux and broader recovery acceptance remain open. No stable release has been declared.** See the [acceptance record](docs/acceptance.md) for evidence and outstanding checks. Mocked adapter tests do not establish real isolation.
 
 Windows uses explicit MXC isolation with networking disabled. The earlier legacy Windows attempt with Codex 0.154.0 failed the outside-file read and loopback-network boundaries; that backend is no longer selected. Every environment must pass the real probes before model execution. See the [acceptance record](docs/acceptance.md) for measured results.
 
@@ -113,6 +113,8 @@ agentgate resume RUN-ID --model gpt-6.1-sol --reasoning-effort high
 These options apply to the current invocation; repeat them on `resume`. AgentGate ignores the Codex user configuration during agent execution, so configure the selection through these flags. Omitting the flags leaves model selection to the pinned CLI's defaults. The selected model must be available to the authenticated account; AgentGate does not retry with a different model or API billing if it is unavailable.
 
 After plan approval, the CLI shows the worktree and pauses for dependency preparation. Review dependency scripts before running an installer there, then confirm that the approved checks work offline. AgentGate does not install packages automatically or supply production secrets. Changes outside the approved path scope block progress rather than silently expanding the plan.
+
+On Windows, agent and check Node processes receive fixed `--preserve-symlinks --preserve-symlinks-main` options so script loading works without reading denied ancestor-directory metadata. Caller-supplied `NODE_OPTIONS` are discarded. This changes module identity for linked packages; projects using linked native modules need their own compatibility checks.
 
 ## Inspect, resume, and clean up
 

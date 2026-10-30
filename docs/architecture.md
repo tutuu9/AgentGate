@@ -74,6 +74,8 @@ Codex runs with a dedicated profile and a controller-owned launcher outside the 
 
 The adapter accepts Codex CLI 0.166.0 on Windows and 0.154.0 on Linux, disables external integrations, refuses API-key authentication, and requires live sandbox observations before worker execution. Windows explicitly selects MXC with networking disabled; Linux uses the supported CLI sandbox interface. MXC's offline policy denies host loopback as well as external networking. Managed networking is not enabled. Missing MXC capabilities or restrictive managed configuration make execution unavailable; there is no automatic legacy fallback. A legacy setup marker is not required or accepted as isolation evidence.
 
+Windows Node processes use controller-fixed `NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main`. Node's default script resolution walks ancestor metadata such as `C:\`, which the default-deny policy blocks. The fixed flags support npm and nested Node script loading while retaining the same filesystem grants. They replace untrusted caller options; linked-package module identity differs from default Node behavior and needs project-specific validation.
+
 Native isolation and its limitations require real acceptance evidence. Mocked subprocess responses, generated configuration, and prompts alone cannot prove that an operating-system boundary is enforced.
 
 ## Budgets and retention

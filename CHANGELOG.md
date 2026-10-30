@@ -18,8 +18,10 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Fixed
 
+- Describe the approved objective in PR text after recovery instead of publishing an intermediate repair diagnostic as the final summary.
+- Support npm and nested Node script startup inside Windows MXC with fixed symlink-preservation flags while retaining default-deny filesystem permissions.
 - Preserve the actual Windows username when refreshing the native Codex sandbox; ignore caller-supplied identity overrides while continuing to exclude credentials.
 
 ### Status
 
-- Package version `0.1.0-dev.0` is an implementation preview. No stable release, completed live sandbox acceptance, or public npm publication is claimed.
+- Package version `0.1.0-dev.0` is an implementation preview. Windows MXC isolation and a real Issue-to-draft-PR run passed; Linux and broader recovery acceptance remain open. No stable release or public npm publication is claimed.
