@@ -27,6 +27,8 @@ If draft PRs are unavailable, AgentGate asks again before creating an ordinary P
 - Native Windows with Microsoft Execution Containers (MXC), or Linux with the required Codex sandbox available. Windows selects MXC explicitly and blocks execution if the device or managed policy cannot support it; there is no legacy fallback. See [MXC compatibility](https://learn.chatgpt.com/docs/windows/windows-sandbox#mxc-compatibility).
 - Dependencies and check tools that can run offline. The preview targets Node.js/TypeScript repositories and one active run per AgentGate state directory.
 
+Linux needs distribution-provided `bubblewrap` and permission to create its sandbox namespaces. On Ubuntu 24.04, a missing distro `bwrap-userns-restrict` AppArmor profile can prevent startup; follow the [official Linux sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing#prerequisites). The native acceptance job checks namespace creation first and loads the packaged profile only when needed. It preserves the system-wide AppArmor setting and runs Codex as the ordinary runner user. An unavailable profile or failed native probe blocks acceptance.
+
 macOS, GitHub Enterprise hosts, cross-repository forks, hosted workers, webhooks, web UI, and Claude Code are not implemented in this preview.
 
 ## Install from source

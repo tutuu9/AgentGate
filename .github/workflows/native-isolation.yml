@@ -9,8 +9,8 @@ permissions:
 
 jobs:
   linux:
-    name: Codex 0.154.0 / native Ubuntu
-    runs-on: ubuntu-latest
+    name: Codex 0.154.0 / native Ubuntu 24.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
       run:
@@ -19,6 +19,44 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - name: Prepare distro bubblewrap and its targeted AppArmor prerequisite
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap apparmor-profiles apparmor-utils
+          command -v bwrap
+          bwrap --version
+          restriction="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+          printf 'apparmor_restrict_unprivileged_userns=%s\n' "${restriction:-unavailable}"
+          namespace_probe() {
+            bwrap --unshare-user --unshare-pid --unshare-net --ro-bind / / --proc /proc --dev /dev /usr/bin/true
+          }
+          if namespace_probe; then
+            echo 'Distro bubblewrap can create namespaces; no profile change needed.'
+          else
+            if [[ "$restriction" != 1 ]]; then
+              echo 'Namespace setup failed without the documented AppArmor restriction; blocked.' >&2
+              exit 1
+            fi
+            profile=/etc/apparmor.d/bwrap-userns-restrict
+            if [[ ! -f "$profile" ]]; then
+              packaged_profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+              if [[ ! -f "$packaged_profile" ]]; then
+                echo 'Required distro bubblewrap AppArmor profile is unavailable; blocked.' >&2
+                exit 1
+              fi
+              sudo install -m 0644 "$packaged_profile" "$profile"
+            fi
+            sudo apparmor_parser -r "$profile"
+            sudo grep -E '^bwrap([[:space:]]|//)' /sys/kernel/security/apparmor/profiles
+            echo 'Loaded the packaged bubblewrap AppArmor profile for this disposable runner.'
+            namespace_probe
+          fi
+          restriction_after="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+          printf 'apparmor_restrict_unprivileged_userns_after=%s\n' "${restriction_after:-unavailable}"
+          if [[ "$restriction_after" != "$restriction" ]]; then
+            echo 'The system-wide AppArmor restriction changed during prerequisite setup; blocked.' >&2
+            exit 1
+          fi
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
