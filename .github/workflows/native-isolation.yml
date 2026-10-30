@@ -79,8 +79,21 @@ jobs:
           "$AGENTGATE_CODEX_PATH" --version
           git rev-parse HEAD
       - name: Verify native filesystem and network isolation without a model
-        run: node test/manual/verify-isolation.ts "$AGENTGATE_CODEX_PATH"
+        run: node test/manual/verify-isolation.ts "$AGENTGATE_CODEX_PATH" | tee "$RUNNER_TEMP/agentgate-isolation.jsonl"
       - name: Verify offline Node and TypeScript checks without a model
         run: node test/manual/verify-toolchain.ts "$AGENTGATE_CODEX_PATH"
       - name: Verify real process cancellation and stale-lock refusal
         run: node test/manual/verify-lock-recovery.ts
+      - name: Require captured Node child stream compatibility for Linux MVP
+        run: |
+          node --input-type=module - "$RUNNER_TEMP/agentgate-isolation.jsonl" <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const observations = readFileSync(process.argv[2], 'utf8').trim().split('\n').map(JSON.parse);
+          const result = observations.findLast(entry => entry.scope === 'native-filesystem-network-isolation');
+          if (result?.result !== 'passed' || result.capturedChildStdioCompatible !== true) {
+            console.error('Linux MVP blocked: captured stdin/stdout/stderr of nested Node processes is not verified compatible.');
+            process.exitCode = 2;
+          } else {
+            console.log('Native isolation and captured Node child stream compatibility passed.');
+          }
+          NODE
