@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import { RunSchema, type Run } from '../src/core/contracts.ts';
+import { buildPullRequestDraft } from '../src/core/publication.ts';
 import {
   approvalFingerprint,
   assertWithinScope,
@@ -44,6 +45,21 @@ function run(): Run {
     },
   });
 }
+
+test('publication describes the approved objective after recovery from an infrastructure failure', () => {
+  const recovered = run();
+  recovered.implementationSummary =
+    'No changes made: checks could not start before controller repair.';
+  recovered.checks = [{ name: 'test', exitCode: 0, output: 'Tests passed', durationMs: 10 }];
+  recovered.review = { summary: 'The change matches the approved plan.', findings: [] };
+
+  const proposal = buildPullRequestDraft(recovered);
+
+  assert.ok(proposal.body.includes('Fix greeting'));
+  assert.ok(proposal.body.includes('- test: passed'));
+  assert.ok(proposal.body.includes(recovered.review.summary));
+  assert.ok(!proposal.body.includes(recovered.implementationSummary));
+});
 
 test('redaction masks recognizable credentials and explicitly configured values, not Git hashes', () => {
   const hash = 'a1b2c3d4'.repeat(5);

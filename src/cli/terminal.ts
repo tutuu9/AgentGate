@@ -52,7 +52,7 @@ export class TerminalInteraction implements UserInteraction {
     for (const check of run.checks)
       this.show(`${check.name}: exit ${check.exitCode}\n${check.output}`);
     this.show(
-      `Review:\n${JSON.stringify(run.review, null, 2)}\nSummary: ${run.implementationSummary ?? ''}\nRepository: ${run.repo.fullName}\nBranch: ${run.branch}\nCommit: ${run.candidateCommit}\nIssue: ${run.issue.url}`,
+      `Review:\n${JSON.stringify(run.review, null, 2)}\nLatest agent-stage report: ${run.implementationSummary ?? ''}\nRepository: ${run.repo.fullName}\nBranch: ${run.branch}\nCommit: ${run.candidateCommit}\nIssue: ${run.issue.url}`,
     );
     this.show(`Pull request title:\n${proposal.title}\n\nPull request body:\n${proposal.body}`);
     return this.confirm('Push this exact commit and create a draft pull request?');

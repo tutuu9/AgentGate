@@ -10,7 +10,7 @@ export interface PullRequestDraft {
 export function buildPullRequestDraft(run: Run): PullRequestDraft {
   const body = [
     `Closes #${run.issue.number}`,
-    run.implementationSummary ?? run.plan?.objective ?? 'AgentGate changes',
+    run.plan?.objective ?? run.implementationSummary ?? 'AgentGate changes',
     'Validation:',
     ...run.checks.map((check) => `- ${check.name}: ${check.exitCode === 0 ? 'passed' : 'failed'}`),
     `Review: ${run.review?.summary ?? 'See local run evidence.'}`,
