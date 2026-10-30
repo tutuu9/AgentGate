@@ -277,7 +277,7 @@ async function runStage(
     const signal = AbortSignal.any([abort.signal, stageAbort.signal]);
     let stopped = false;
     const execution = execute({
-      command: codexPath,
+      command: session.codexExecutable ?? codexPath,
       args: [
         ...session.configArgs,
         'sandbox',
@@ -366,6 +366,17 @@ async function verifyCommandTransport(codexPath: string, home: string): Promise<
           stderr: '',
         },
         {
+          name: 'node-descriptor-write',
+          command: process.execPath,
+          args: [
+            '-e',
+            "const fs=require('node:fs');fs.writeSync(1,'agentgate-fd1-marker\\n');fs.writeSync(2,'agentgate-fd2-marker\\n')",
+          ],
+          exitCode: 0,
+          stdout: 'agentgate-fd1-marker\n',
+          stderr: 'agentgate-fd2-marker\n',
+        },
+        {
           name: 'node-stdout',
           command: process.execPath,
           args: ['-e', "console.log('agentgate-node-marker')"],
@@ -396,7 +407,7 @@ async function verifyCommandTransport(codexPath: string, home: string): Promise<
       let passed = true;
       for (const command of commands) {
         const result = await execute({
-          command: codexPath,
+          command: session.codexExecutable ?? codexPath,
           args: [
             ...session.configArgs,
             'sandbox',
@@ -427,7 +438,44 @@ async function verifyCommandTransport(codexPath: string, home: string): Promise<
           passed: commandPassed,
         });
       }
-      if (!passed) throw new Error('Native command output or exit status was not preserved.');
+      if (!passed) {
+        const diagnostic = String.raw`
+const fs = require('node:fs');
+const emit = value => fs.writeSync(1, JSON.stringify(value) + '\n');
+const failure = error => error ? {code: error.code, syscall: error.syscall, name: error.name} : null;
+for (const fd of [1, 2]) {
+  const info = fs.fstatSync(fd);
+  emit({fd, fifo: info.isFIFO(), socket: info.isSocket(), characterDevice: info.isCharacterDevice(), procDescriptorVisible: fs.existsSync('/proc/self/fd/' + fd)});
+}
+for (const [name, stream] of [['stdout', process.stdout], ['stderr', process.stderr]]) {
+  stream.on('error', error => emit({name, event: 'error', error: failure(error)}));
+  stream.write('agentgate-stream-marker\n', error => emit({name, event: 'callback', error: failure(error)}));
+}
+setTimeout(() => emit({event: 'settled', stdoutError: failure(process.stdout.errored), stderrError: failure(process.stderr.errored)}), 250);`;
+        const result = await execute({
+          command: session.codexExecutable ?? codexPath,
+          args: [
+            ...session.configArgs,
+            'sandbox',
+            '--include-managed-config',
+            '-P',
+            session.profile,
+            '-C',
+            session.launcher,
+            '--',
+            process.execPath,
+            '-e',
+            diagnostic,
+          ],
+          cwd: session.launcher,
+          env: session.env,
+          signal: abort.signal,
+          timeoutMs: 10_000,
+          maxOutputBytes: 8192,
+        });
+        emit({ phase: 'native-node-stream-diagnostic', ...result, modelInvoked: false });
+        throw new Error('Native command output or exit status was not preserved.');
+      }
     });
   } catch (error) {
     uncertain = hasUncertainTermination(error);
@@ -467,7 +515,7 @@ async function main(): Promise<void> {
   try {
     await withSession(codexPath, home, undefined, false, async (session) => {
       const result = await execute({
-        command: codexPath,
+        command: session.codexExecutable ?? codexPath,
         args: [...session.configArgs, '--version'],
         cwd: session.launcher,
         env: session.env,
