@@ -104,3 +104,26 @@ jobs:
             console.log('Native isolation and captured Node child stream compatibility passed.');
           }
           NODE
+      - name: Install Codex 0.166.0 for isolated runtime experiments
+        if: ${{ !cancelled() && steps.isolation.outcome == 'success' }}
+        id: candidate
+        run: |
+          npm install --prefix "$RUNNER_TEMP/agentgate-codex-candidate" --no-save --ignore-scripts --no-audit --no-fund @openai/codex@0.166.0
+          mapfile -d '' candidates < <(find "$RUNNER_TEMP/agentgate-codex-candidate/node_modules/@openai" -type f -name codex -perm -u=x -print0)
+          if [[ ${#candidates[@]} != 1 ]]; then
+            echo 'Expected exactly one executable candidate Codex binary.' >&2
+            exit 1
+          fi
+          printf 'AGENTGATE_CANDIDATE_CODEX_PATH=%s\n' "$(realpath "${candidates[0]}")" >> "$GITHUB_ENV"
+      - name: Experiment with managed deny-all networking on Codex 0.154.0
+        if: ${{ !cancelled() && steps.isolation.outcome == 'success' }}
+        run: node test/manual/verify-linux-managed-network.ts "$AGENTGATE_CODEX_PATH"
+      - name: Experiment with managed deny-all networking on Codex 0.166.0
+        if: ${{ !cancelled() && steps.candidate.outcome == 'success' }}
+        run: node test/manual/verify-linux-managed-network.ts "$AGENTGATE_CANDIDATE_CODEX_PATH"
+      - name: Experiment with an outer PID namespace on Codex 0.154.0
+        if: ${{ !cancelled() && steps.isolation.outcome == 'success' }}
+        run: node test/manual/verify-linux-supervisor.ts "$AGENTGATE_CODEX_PATH" --expected-version 0.154.0
+      - name: Experiment with an outer PID namespace on Codex 0.166.0
+        if: ${{ !cancelled() && steps.candidate.outcome == 'success' }}
+        run: node test/manual/verify-linux-supervisor.ts "$AGENTGATE_CANDIDATE_CODEX_PATH" --expected-version 0.166.0
