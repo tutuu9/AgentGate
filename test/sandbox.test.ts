@@ -1,0 +1,1101 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir, userInfo } from 'node:os';
+import { delimiter, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import test from 'node:test';
+import { CodexRunner } from '../src/adapters/codex.ts';
+import { RunSchema } from '../src/core/contracts.ts';
+import {
+  CODEX_VERSION,
+  CodexSandbox,
+  createCheckSandboxSession,
+  createSandboxSession,
+  DISABLED_FEATURES,
+  executeSandbox,
+  isolatedEnvironment,
+  redactOutput,
+} from '../src/adapters/sandbox.ts';
+import { ProcessError, type ExecuteOptions, type Executor } from '../src/adapters/process.ts';
+import { hasUncertainTermination } from '../src/core/errors.ts';
+
+test('isolated environments exclude credentials, shell options and proxies', () => {
+  const env = isolatedEnvironment('/agentgate', '/temporary', {
+    PATH: '/bin',
+    GH_TOKEN: 'fake',
+    GITHUB_TOKEN: 'fake',
+    OPENAI_API_KEY: 'fake',
+    ANTHROPIC_API_KEY: 'fake',
+    NODE_OPTIONS: '--require fake',
+    node_options: '--import fake-lowercase',
+    NoDe_OpTiOnS: '--require fake-mixed-case',
+    HTTPS_PROXY: 'https://fake',
+    SSH_AUTH_SOCK: '/fake',
+    CODEX_NETWORK_ALLOW_LOCAL_BINDING: '1',
+    npm_config_registry: 'https://fake',
+  });
+  assert.equal(env.PATH, '/bin');
+  for (const key of [
+    'GH_TOKEN',
+    'GITHUB_TOKEN',
+    'OPENAI_API_KEY',
+    'ANTHROPIC_API_KEY',
+    'node_options',
+    'NoDe_OpTiOnS',
+    'HTTPS_PROXY',
+    'SSH_AUTH_SOCK',
+    'CODEX_NETWORK_ALLOW_LOCAL_BINDING',
+    'npm_config_registry',
+  ])
+    assert.equal(env[key], undefined);
+  assert.equal(
+    env.NODE_OPTIONS,
+    process.platform === 'win32' ? '--preserve-symlinks --preserve-symlinks-main' : undefined,
+  );
+  assert.ok(!Object.values(env).some((value) => value?.includes('--require fake')));
+});
+
+test('Windows sandbox identity comes from the OS rather than caller environment', () => {
+  const env = isolatedEnvironment('/agentgate', '/temporary', {
+    USERNAME: 'Administrators',
+    username: 'untrusted-user',
+    USERDOMAIN: 'untrusted-domain',
+    GH_TOKEN: 'fake',
+    CODEX_API_KEY: 'fake',
+  });
+  assert.equal(env.USERNAME, process.platform === 'win32' ? userInfo().username : undefined);
+  assert.equal(env.username, undefined);
+  assert.equal(env.USERDOMAIN, undefined);
+  assert.equal(env.GH_TOKEN, undefined);
+  assert.equal(env.CODEX_API_KEY, undefined);
+});
+
+test(
+  'MXC infrastructure uses trusted redirected host paths without caller overrides',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const previousLocalAppData = process.env.LOCALAPPDATA;
+    try {
+      const redirected = 'D:\\Redirected Profiles\\Local Data';
+      process.env.LOCALAPPDATA = redirected;
+      const env = isolatedEnvironment('/agentgate', '/temporary', {
+        LOCALAPPDATA: 'C:\\untrusted-appdata',
+        localappdata: 'C:\\untrusted-lowercase',
+        SystemRoot: 'Z:\\untrusted-windows',
+        SYSTEMDRIVE: 'Z:',
+        APPDATA: 'C:\\unneeded-roaming-profile',
+        GH_TOKEN: 'fake',
+        HTTPS_PROXY: 'http://fake',
+      });
+      assert.equal(env.LOCALAPPDATA, redirected);
+      assert.equal(env.localappdata, undefined);
+      assert.equal(env.SystemRoot, process.env.SystemRoot);
+      assert.equal(env.SystemDrive, process.env.SystemDrive);
+      assert.equal(env.SYSTEMDRIVE, undefined);
+      assert.equal(env.APPDATA, undefined);
+      assert.equal(env.GH_TOKEN, undefined);
+      assert.equal(env.HTTPS_PROXY, undefined);
+      for (const invalid of ['', 'relative-appdata', 'C:\\invalid\npath']) {
+        process.env.LOCALAPPDATA = invalid;
+        assert.throws(() => isolatedEnvironment('/agentgate', '/temporary'), /host LOCALAPPDATA/);
+      }
+      delete process.env.LOCALAPPDATA;
+      assert.throws(() => isolatedEnvironment('/agentgate', '/temporary'), /host LOCALAPPDATA/);
+    } finally {
+      if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = previousLocalAppData;
+    }
+  },
+);
+
+test(
+  'Linux grants only the canonical controller-selected executable for native self-reexec',
+  { skip: process.platform !== 'linux' },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-runtime-grant-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const tools = join(directory, 'tools');
+    const worktree = join(directory, 'checkout');
+    await mkdir(tools);
+    await mkdir(worktree);
+    const executable = join(tools, 'native-fixture');
+    // A policy fixture only; no executor or real Codex invocation is used here.
+    await writeFile(executable, 'controller-owned executable fixture', { mode: 0o700 });
+    await symlink(executable, join(tools, 'codex'));
+    const previousPath = process.env.PATH;
+    process.env.PATH = [tools, previousPath].filter(Boolean).join(delimiter);
+    let session;
+    try {
+      session = await createSandboxSession(join(directory, 'home'), worktree, true, 'codex');
+      const filesystem = session.configArgs.find((argument) => argument.includes('.filesystem='));
+      assert.ok(filesystem);
+      assert.equal(session.codexExecutable, await realpath(executable));
+      assert.ok(filesystem.includes(`${JSON.stringify(await realpath(executable))}="read"`));
+      assert.ok(!filesystem.includes(`${JSON.stringify(tools)}="read"`));
+      assert.ok(!filesystem.includes(`${JSON.stringify(join(tools, 'codex'))}="read"`));
+      assert.ok(filesystem.includes('":root"="deny"'));
+      assert.ok(filesystem.includes(`${JSON.stringify(await realpath(worktree))}="write"`));
+      assert.ok(filesystem.includes(`${JSON.stringify(session.env.CODEX_HOME)}="deny"`));
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await session?.cleanup();
+    }
+  },
+);
+
+test(
+  'Linux rejects worktree and state executables before granting native runtime access',
+  { skip: process.platform !== 'linux' },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-runtime-denial-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const home = join(directory, 'home');
+    const worktree = join(directory, 'checkout');
+    await mkdir(home);
+    await mkdir(worktree);
+    const outside = join(directory, 'controller-native');
+    await writeFile(outside, 'unexecuted fixture', { mode: 0o700 });
+    for (const root of [home, worktree]) {
+      const executable = join(root, 'untrusted-native');
+      await writeFile(executable, 'unexecuted fixture', { mode: 0o700 });
+      await assert.rejects(
+        createSandboxSession(home, worktree, true, executable),
+        /outside the worktree and AgentGate state/,
+      );
+      const alias = join(root, 'native-alias');
+      await symlink(outside, alias);
+      await assert.rejects(
+        createSandboxSession(home, worktree, true, alias),
+        /outside the worktree and AgentGate state/,
+      );
+    }
+    const stateAlias = join(directory, 'state-alias');
+    await symlink(join(home, 'untrusted-native'), stateAlias);
+    await assert.rejects(
+      createSandboxSession(home, worktree, true, stateAlias),
+      /outside the worktree and AgentGate state/,
+    );
+    assert.deepEqual(await readdir(join(home, 'runtime')), []);
+  },
+);
+
+test('session policy separates controller state and grants only the chosen worktree', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-policy-'));
+  const workspace = join(directory, 'workspace');
+  await mkdir(workspace);
+  const session = await createSandboxSession(join(directory, 'home'), workspace, true);
+  const codexHome = await realpath(join(directory, 'home', 'codex'));
+  try {
+    assert.ok(session.configArgs.includes('project_root_markers=[]'));
+    assert.ok(session.configArgs.includes('web_search="disabled"'));
+    assert.ok(session.configArgs.some((argument) => argument.endsWith('.network.enabled=false')));
+    assert.ok(session.configArgs.some((argument) => argument.includes('":root"="deny"')));
+    assert.ok(
+      session.configArgs.some(
+        (argument) =>
+          argument.includes(JSON.stringify(codexHome)) &&
+          argument.includes(`${JSON.stringify(codexHome)}="deny"`),
+      ),
+    );
+    assert.equal(
+      session.configArgs.includes('windows.sandbox="mxc"'),
+      process.platform === 'win32',
+    );
+    assert.ok(!session.configArgs.includes('windows.sandbox="elevated"'));
+    assert.ok(!session.configArgs.includes('windows.sandbox="unelevated"'));
+    assert.ok(!session.configArgs.includes('features.prefer_mxc=true'));
+    assert.equal(session.env.GITHUB_TOKEN, undefined);
+    await session.cleanup();
+    assert.deepEqual(await readdir(workspace), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+async function npmFixture(prefix: string) {
+  const directory = join(prefix, 'node_modules', 'npm');
+  const executable = join(directory, 'bin', 'npm-cli.js');
+  await mkdir(join(directory, 'bin'), { recursive: true });
+  // Policy-only fixture: no real npm or Codex execution occurs in these tests.
+  await writeFile(executable, '#!/usr/bin/env node\n', { mode: 0o700 });
+  const metadata = join(directory, 'package.json');
+  await writeFile(metadata, JSON.stringify({ name: 'npm', bin: { npm: 'bin/npm-cli.js' } }));
+  return { directory, executable, metadata };
+}
+
+test(
+  'Linux check sessions grant only the selected npm package and pin Node and its entry point',
+  { skip: process.platform !== 'linux' },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-npm-runtime-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const home = join(directory, 'home');
+    const worktree = join(directory, 'checkout');
+    await mkdir(worktree);
+    const npm = await npmFixture(join(directory, 'installation'));
+    const alias = join(directory, 'npm');
+    await symlink(npm.executable, alias);
+    const args = ['run', 'test', '--', '$(literal); never-shell'];
+    const session = await createCheckSandboxSession(
+      home,
+      worktree,
+      { command: alias, args },
+      process.execPath,
+    );
+    try {
+      assert.deepEqual(session.checkCommand, {
+        command: process.execPath,
+        args: [await realpath(npm.executable), ...args],
+      });
+      const filesystem = session.configArgs.find((argument) => argument.includes('.filesystem='))!;
+      assert.ok(filesystem.includes(`${JSON.stringify(await realpath(npm.directory))}="read"`));
+      for (const broad of [directory, join(directory, 'installation'), home, join(home, 'codex')])
+        assert.ok(!filesystem.includes(`${JSON.stringify(broad)}="read"`));
+      assert.ok(filesystem.includes('":root"="deny"'));
+      assert.ok(filesystem.includes(`${JSON.stringify(join(home, 'codex'))}="deny"`));
+    } finally {
+      await session.cleanup();
+    }
+    const ordinary = await createSandboxSession(home, worktree, true, process.execPath);
+    try {
+      assert.equal(ordinary.npmExecutable, undefined);
+      assert.ok(!ordinary.configArgs.some((argument) => argument.includes(npm.directory)));
+    } finally {
+      await ordinary.cleanup();
+    }
+  },
+);
+
+test(
+  'Linux npm runtime validation rejects mismatched metadata and untrusted package paths',
+  { skip: process.platform !== 'linux' },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-npm-denial-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const home = join(directory, 'home');
+    const worktree = join(directory, 'checkout');
+    await mkdir(home);
+    await mkdir(worktree);
+    const npm = await npmFixture(join(directory, 'installed'));
+    const prepare = (command: string) =>
+      createCheckSandboxSession(home, worktree, { command, args: ['--version'] }, process.execPath);
+    for (const metadata of [
+      { name: 'unrelated', bin: { npm: 'bin/npm-cli.js' } },
+      { name: 'npm', bin: { npm: '../other.js' } },
+      { name: 'npm', bin: { npm: 'bin/other.js' } },
+    ]) {
+      await writeFile(npm.metadata, JSON.stringify(metadata));
+      await assert.rejects(prepare(npm.executable));
+    }
+    await writeFile(npm.metadata, JSON.stringify({ name: 'npm', bin: { npm: 'bin/npm-cli.js' } }));
+    for (const root of [home, worktree]) {
+      const untrusted = await npmFixture(root);
+      await assert.rejects(
+        prepare(untrusted.executable),
+        /outside the worktree and AgentGate state/,
+      );
+      const outwardAlias = join(root, 'npm');
+      await symlink(npm.executable, outwardAlias);
+      await assert.rejects(prepare(outwardAlias), /outside the worktree and AgentGate state/);
+      const inwardAlias = join(directory, `${root === home ? 'state' : 'checkout'}-alias`);
+      await symlink(untrusted.executable, inwardAlias);
+      await assert.rejects(prepare(inwardAlias), /outside the worktree and AgentGate state/);
+    }
+    const fakePrefix = join(directory, 'fake-prefix');
+    await mkdir(join(fakePrefix, 'bin'), { recursive: true });
+    const broadEntry = join(fakePrefix, 'bin', 'npm-cli.js');
+    await writeFile(broadEntry, '#!/usr/bin/env node\n', { mode: 0o700 });
+    await writeFile(
+      join(fakePrefix, 'package.json'),
+      JSON.stringify({ name: 'npm', bin: { npm: 'bin/npm-cli.js' } }),
+    );
+    await assert.rejects(prepare(broadEntry), /installed node_modules\/npm package/);
+    const nestedHome = join(npm.directory, 'state');
+    await assert.rejects(
+      createCheckSandboxSession(
+        nestedHome,
+        worktree,
+        { command: npm.executable, args: [] },
+        process.execPath,
+      ),
+      /outside the worktree and AgentGate state/,
+    );
+    const nestedWorktree = join(npm.directory, 'checkout');
+    await mkdir(nestedWorktree);
+    await assert.rejects(
+      createCheckSandboxSession(
+        home,
+        nestedWorktree,
+        { command: npm.executable, args: [] },
+        process.execPath,
+      ),
+      /outside the worktree and AgentGate state/,
+    );
+    await rename(npm.metadata, `${npm.metadata}.real`);
+    await symlink(`${npm.metadata}.real`, npm.metadata);
+    await assert.rejects(prepare(npm.executable), /bounded regular file/);
+    assert.deepEqual(await readdir(join(home, 'runtime')), []);
+  },
+);
+
+test('sessions reject redirected runtime directories and worktrees before granting access', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-linked-policy-'));
+  const home = join(directory, 'home');
+  const outside = join(directory, 'outside');
+  await mkdir(home);
+  await mkdir(outside);
+  const runtime = join(home, 'runtime');
+  await symlink(outside, runtime, process.platform === 'win32' ? 'junction' : 'dir');
+  try {
+    await assert.rejects(createSandboxSession(home), /real canonical directories/);
+    assert.deepEqual(await readdir(outside), []);
+    await rm(runtime);
+    const linkedWorktree = join(directory, 'linked-worktree');
+    await symlink(outside, linkedWorktree, process.platform === 'win32' ? 'junction' : 'dir');
+    await assert.rejects(
+      createSandboxSession(home, linkedWorktree, true),
+      /real canonical directories/,
+    );
+    assert.deepEqual(await readdir(outside), []);
+    // A real leaf below a redirected ancestor must also be rejected.
+    await mkdir(join(outside, 'nested'));
+    await assert.rejects(
+      createSandboxSession(join(linkedWorktree, 'nested', 'home')),
+      /real canonical directories/,
+    );
+    assert.deepEqual(await readdir(join(outside, 'nested')), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test(
+  'Windows short directory aliases use canonical policy paths without accepting junctions',
+  {
+    skip: process.platform !== 'win32',
+  },
+  async (context) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate short alias fixture-'));
+    // Read-only fixed command: only a controller-generated fixture path enters via the environment.
+    const script = 'for %I in ("%AGENTGATE_SHORT_PATH%") do @echo %~sI';
+    try {
+      const result = spawnSync(
+        join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'cmd.exe'),
+        ['/d', '/s', '/c', script],
+        {
+          env: {
+            SystemRoot: process.env.SystemRoot,
+            TEMP: tmpdir(),
+            TMP: tmpdir(),
+            AGENTGATE_SHORT_PATH: directory,
+          },
+          encoding: 'utf8',
+          shell: false,
+          windowsHide: true,
+          windowsVerbatimArguments: true,
+          timeout: 10_000,
+        },
+      );
+      assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+      const shortPath = result.stdout.trim();
+      assert.equal(await realpath(shortPath), await realpath(directory));
+      if (!shortPath.includes('~')) {
+        context.skip('This filesystem does not generate DOS 8.3 aliases.');
+        return;
+      }
+      const workspace = join(shortPath, 'workspace');
+      await mkdir(workspace);
+      const session = await createSandboxSession(join(shortPath, 'home'), workspace, true);
+      try {
+        assert.equal(session.env.CODEX_HOME, await realpath(join(directory, 'home', 'codex')));
+        const canonicalWorkspace = await realpath(workspace);
+        assert.ok(
+          session.configArgs.some((argument) =>
+            argument.includes(`${JSON.stringify(canonicalWorkspace)}="write"`),
+          ),
+        );
+        assert.ok(!session.launcher.includes('~'));
+      } finally {
+        await session.cleanup();
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+function prerequisiteExecutor(
+  options: {
+    badVersion?: boolean;
+    version?: string;
+    enabledFeature?: boolean;
+    enabledMcp?: boolean;
+    apiAuth?: boolean;
+  } = {},
+): Executor {
+  return async ({ args }) => {
+    let stdout = '';
+    if (args.includes('--version'))
+      stdout = `codex-cli ${options.badVersion ? '999.0.0' : (options.version ?? CODEX_VERSION)}`;
+    else if (args.includes('features'))
+      stdout = DISABLED_FEATURES.map(
+        (feature) =>
+          `${feature} stable ${options.enabledFeature && feature === 'apps' ? 'true' : 'false'}`,
+      ).join('\n');
+    else if (args.includes('mcp'))
+      stdout = options.enabledMcp ? '[{"name":"unexpected","enabled":true}]' : '[]';
+    else if (args.includes('login'))
+      stdout = options.apiAuth ? 'Logged in using an API key' : 'Logged in using ChatGPT';
+    else if (args.includes('--help')) stdout = '--permission-profile --include-managed-config';
+    return { exitCode: 0, stdout, stderr: '', durationMs: 1 };
+  };
+}
+
+interface SyntheticProbePaths {
+  write: string;
+  outside: string;
+  sentinel: string;
+  nonce: string;
+  ready: string;
+  proceed: string;
+}
+
+async function syntheticProbe(
+  options: ExecuteOptions,
+  observation: Record<string, unknown>,
+  effects: {
+    beforeReady?: (paths: SyntheticProbePaths) => Promise<void>;
+    afterProceed?: (paths: SyntheticProbePaths) => Promise<void>;
+    missingWorkspaceWrite?: boolean;
+    redirectedReport?: boolean;
+  } = {},
+) {
+  const script = options.args[options.args.indexOf('-e') + 1]!;
+  const encoded = /\nconst p=(.+);\n/.exec(script);
+  assert.ok(encoded, 'The fixed probe supplies fixture paths as JSON.');
+  const paths = JSON.parse(encoded[1]!) as SyntheticProbePaths;
+  if (observation.writeWorkspace && !effects.missingWorkspaceWrite)
+    await writeFile(paths.write, paths.nonce, { flag: 'wx' });
+  await effects.beforeReady?.(paths);
+  await writeFile(`${paths.ready}.tmp`, JSON.stringify({ nonce: paths.nonce, observation }), {
+    flag: 'wx',
+  });
+  if (effects.redirectedReport) await symlink(`${paths.ready}.tmp`, paths.ready);
+  else await rename(`${paths.ready}.tmp`, paths.ready);
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    options.signal?.throwIfAborted();
+    try {
+      if ((await readFile(paths.proceed, 'utf8')) === paths.nonce) break;
+    } catch (error) {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+    }
+    if (Date.now() > deadline) throw new Error('Synthetic controller handshake did not finish.');
+    await delay(10, undefined, { signal: options.signal });
+  }
+  await effects.afterProceed?.(paths);
+  return { exitCode: 0, stdout: JSON.stringify(observation), stderr: '', durationMs: 1 };
+}
+
+test('Codex prerequisites reject unsupported versions, integrations and API billing', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-doctor-'));
+  const session = await createSandboxSession(directory);
+  try {
+    for (const [options, name] of [
+      [{ badVersion: true }, 'codex-version'],
+      [{ enabledFeature: true }, 'codex-integrations'],
+      [{ enabledMcp: true }, 'codex-mcp'],
+      [{ apiAuth: true }, 'codex-auth'],
+    ] as const) {
+      const checks = await new CodexSandbox({
+        codexPath: process.execPath,
+        home: directory,
+        executor: prerequisiteExecutor(options),
+      }).prerequisites(session);
+      assert.equal(checks.find((check) => check.name === name)?.ok, false);
+    }
+  } finally {
+    await session.cleanup();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('doctor stops immediately on cancellation and propagates uncertain termination', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-cancel-doctor-'));
+  const abort = new AbortController();
+  let calls = 0;
+  const sandbox = new CodexSandbox({
+    codexPath: process.execPath,
+    home: directory,
+    executor: async (options) => {
+      calls++;
+      assert.equal(options.signal, abort.signal);
+      abort.abort(new Error('test cancellation'));
+      return { exitCode: 0, stdout: `codex-cli ${CODEX_VERSION}`, stderr: '', durationMs: 1 };
+    },
+  });
+  try {
+    await assert.rejects(sandbox.doctor(abort.signal), /test cancellation/);
+    assert.equal(calls, 1);
+    assert.deepEqual(await readdir(join(directory, 'runtime')), []);
+    const failure = new ProcessError('termination', 'Unverified owned process tree.');
+    const uncertain = new CodexSandbox({
+      codexPath: process.execPath,
+      home: directory,
+      executor: async (options) => {
+        // Missing scratch deliberately makes cleanup fail; the primary termination must survive.
+        await rm(options.cwd!, { recursive: true, force: true });
+        throw failure;
+      },
+    });
+    await assert.rejects(uncertain.doctor(), (error) => error === failure);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('doctor preserves launchers and probe fixtures until uncertain termination is resolved', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-doctor-preservation-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  for (const stage of ['prerequisite', 'probe']) {
+    for (const nested of [false, true]) {
+      const home = join(directory, `${stage}-${nested}`);
+      const termination = new ProcessError('termination', 'Fake unverified worker shutdown.');
+      const failure = nested
+        ? new Error('Wrapped fixture failure', { cause: new AggregateError([termination]) })
+        : termination;
+      const launchers = new Set<string>();
+      const prerequisites = prerequisiteExecutor();
+      const sandbox = new CodexSandbox({
+        codexPath: process.execPath,
+        home,
+        connectivity: async () => true,
+        executor: async (options) => {
+          launchers.add(options.cwd!);
+          if (
+            stage === 'prerequisite' ||
+            (options.args.includes('sandbox') && !options.args.includes('--help'))
+          )
+            throw failure;
+          return prerequisites(options);
+        },
+      });
+
+      await assert.rejects(sandbox.doctor(), (error) => error === failure);
+
+      assert.equal(launchers.size, stage === 'probe' ? 2 : 1);
+      for (const launcher of launchers) await access(launcher);
+      const probes = (await readdir(join(home, 'runtime'))).filter((name) =>
+        name.startsWith('probe-'),
+      );
+      assert.equal(probes.length, stage === 'probe' ? 1 : 0);
+      if (stage === 'probe') await access(join(home, 'runtime', probes[0]!, 'fake-secret.txt'));
+    }
+  }
+});
+
+test('native probe stops preserve Linux fixtures and clean verified Windows stops', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-doctor-cleanup-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  for (const kind of ['timeout', 'aborted', 'output-limit'] as const) {
+    const home = join(directory, kind);
+    const prerequisites = prerequisiteExecutor();
+    const sandbox = new CodexSandbox({
+      codexPath: process.execPath,
+      home,
+      connectivity: async () => true,
+      executor: async (options) => {
+        if (options.args.includes('sandbox') && !options.args.includes('--help'))
+          throw new ProcessError(kind, 'Fake worker shutdown was verified.');
+        return prerequisites(options);
+      },
+    });
+
+    if (process.platform === 'linux') {
+      await assert.rejects(sandbox.doctor(), hasUncertainTermination);
+      const retained = await readdir(join(home, 'runtime'));
+      assert.ok(retained.some((name) => name.startsWith('probe-')));
+      assert.ok(retained.some((name) => !name.startsWith('probe-')));
+    } else {
+      const checks = await sandbox.doctor();
+      assert.equal(checks.find((check) => check.name === 'sandbox-read')?.ok, false);
+      assert.deepEqual(await readdir(join(home, 'runtime')), []);
+    }
+  }
+});
+
+test('native execution retains interrupted Linux errors as uncertain without masking their cause', async () => {
+  const options: ExecuteOptions = { command: process.execPath, args: ['--version'] };
+  for (const kind of ['aborted', 'timeout', 'output-limit'] as const) {
+    for (const nested of [false, true]) {
+      const stop = new ProcessError(kind, 'Synthetic native stop; not isolation evidence.');
+      const failure = nested
+        ? new Error('Wrapped native failure', { cause: new AggregateError([stop]) })
+        : stop;
+      await assert.rejects(
+        executeSandbox(options, async () => {
+          throw failure;
+        }),
+        (error) =>
+          process.platform === 'linux'
+            ? hasUncertainTermination(error) && error instanceof Error && error.cause === failure
+            : error === failure,
+      );
+    }
+  }
+  const abort = new AbortController();
+  const cancelled = new DOMException('Native probe was interrupted.', 'AbortError');
+  await assert.rejects(
+    executeSandbox({ ...options, signal: abort.signal }, async () => {
+      abort.abort(cancelled);
+      throw cancelled;
+    }),
+    (error) =>
+      process.platform === 'linux'
+        ? hasUncertainTermination(error) && error instanceof Error && error.cause === cancelled
+        : error === cancelled,
+  );
+  for (const failure of [
+    new ProcessError('spawn', 'The native executable did not start.'),
+    new AggregateError([new ProcessError('termination', 'Already unverified.')]),
+  ]) {
+    await assert.rejects(
+      executeSandbox(options, async () => {
+        throw failure;
+      }),
+      (error) => error === failure,
+    );
+  }
+  const result = { exitCode: 37, stdout: 'out', stderr: 'err', durationMs: 1 };
+  assert.equal(await executeSandbox(options, async () => result), result);
+});
+
+test(
+  'Linux doctor blocks model stages and direct checks despite authenticated physical success',
+  { skip: process.platform !== 'linux' },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-linux-workflow-blocked-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const prerequisites = prerequisiteExecutor();
+    let physicalCalls = 0;
+    const options = {
+      codexPath: process.execPath,
+      home: directory,
+      connectivity: async () => true,
+      executor: async (options: ExecuteOptions) => {
+        assert.ok(!options.args.includes('exec'), 'A model command must never be launched.');
+        if (!options.args.includes('sandbox') || options.args.includes('--help'))
+          return prerequisites(options);
+        const script = options.args[options.args.indexOf('-e') + 1]!;
+        assert.ok(script.includes('const p='), 'A workflow/check command must never be launched.');
+        physicalCalls++;
+        return syntheticProbe(options, {
+          readWorkspace: true,
+          writeWorkspace: options.args.some((argument) => /workspace"="write"/.test(argument)),
+          readSentinel: false,
+          writeSentinel: true,
+          writeOutside: true,
+          loopback: false,
+          egress: false,
+          credentials: false,
+        });
+      },
+    };
+    const sandbox = new CodexSandbox(options);
+    const checks = await sandbox.doctor();
+    assert.equal(checks.find((check) => check.name === 'codex-auth')?.ok, true);
+    assert.deepEqual(
+      checks.filter((check) => !check.ok).map((check) => check.name),
+      ['linux-workflow-support'],
+    );
+    assert.equal(physicalCalls, 2);
+    await assert.rejects(
+      sandbox.check(
+        { name: 'never', command: 'nonexistent-approved-command', args: [], timeoutMs: 1000 },
+        join(directory, 'nonexistent-worktree'),
+      ),
+      /Sandbox blocked: linux-workflow-support:.*cancellation.*captured Node/,
+    );
+    assert.equal(physicalCalls, 4);
+    const run = RunSchema.parse({
+      schemaVersion: 1,
+      id: 'b12e820a-6398-4448-9f80-de5b073a6d1a',
+      repo: {
+        name: 'fixture',
+        path: directory,
+        fullName: 'owner/repo',
+        baseBranch: 'main',
+        checks: [{ name: 'test', command: 'npm', args: ['test'], timeoutMs: 1000 }],
+      },
+      issue: {
+        url: 'https://github.com/owner/repo/issues/1',
+        number: 1,
+        title: 'Fixture',
+        body: '',
+      },
+      baseCommit: 'a'.repeat(40),
+      branch: 'agentgate/fixture',
+      worktree: directory,
+      status: 'planning',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const runner = new CodexRunner(options);
+    await assert.rejects(
+      runner.run('plan', { run }),
+      /Codex execution blocked: linux-workflow-support:.*cancellation.*captured Node/,
+    );
+    assert.equal(physicalCalls, 6);
+    assert.deepEqual(await readdir(join(directory, 'runtime')), []);
+  },
+);
+
+test('doctor rejects the other platform contract before executing a sandbox command', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-platform-version-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const incompatibleVersion = process.platform === 'win32' ? '0.154.0' : '0.166.0';
+  const commands: string[][] = [];
+  const executor = prerequisiteExecutor({ version: incompatibleVersion });
+  const sandbox = new CodexSandbox({
+    codexPath: process.execPath,
+    home: directory,
+    executor: async (options) => {
+      commands.push([...options.args]);
+      return executor(options);
+    },
+  });
+  const checks = await sandbox.doctor();
+  assert.equal(checks.find((check) => check.name === 'codex-version')?.ok, false);
+  assert.equal(commands.length, 1);
+  assert.ok(commands[0]!.includes('--version'));
+});
+
+test(
+  'unavailable Windows MXC fails without admin setup or a legacy fallback',
+  { skip: process.platform !== 'win32' },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-mxc-unavailable-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const prerequisites = prerequisiteExecutor();
+    const sandboxCommands: ExecuteOptions[] = [];
+    const sandbox = new CodexSandbox({
+      codexPath: process.execPath,
+      home: directory,
+      connectivity: async () => true,
+      executor: async (options) => {
+        if (!options.args.includes('sandbox') || options.args.includes('--help'))
+          return prerequisites(options);
+        sandboxCommands.push(options);
+        return {
+          exitCode: 1,
+          stdout: '',
+          stderr: 'error: MXC isolation is unavailable on this host',
+          durationMs: 1,
+        };
+      },
+    });
+    const checks = await sandbox.doctor();
+    assert.equal(checks.find((check) => check.name === 'sandbox-read')?.ok, false);
+    assert.match(checks.find((check) => check.name === 'sandbox-read')!.detail, /MXC.*unavailable/);
+    assert.equal(sandboxCommands.length, 1);
+    assert.ok(sandboxCommands[0]!.args.includes('windows.sandbox="mxc"'));
+    assert.ok(!sandboxCommands[0]!.args.includes('setup'));
+    assert.ok(!checks.some((check) => check.name === 'windows-sandbox-setup'));
+    await assert.rejects(access(join(directory, 'codex', '.sandbox')), { code: 'ENOENT' });
+  },
+);
+
+test('check launches fixed trampoline with separate argv and redacts output', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-check-'));
+  const worktree = join(directory, 'checkout');
+  await mkdir(worktree);
+  let captured: ExecuteOptions | undefined;
+  class FakeVerifiedSandbox extends CodexSandbox {
+    override async doctor() {
+      return [{ name: 'unit-test', ok: true, detail: 'Fake; not evidence of isolation.' }];
+    }
+  }
+  const sandbox = new FakeVerifiedSandbox({
+    codexPath: process.execPath,
+    home: join(directory, 'home'),
+    executor: async (options) => {
+      captured = options;
+      return { exitCode: 2, stdout: 'token=fake-sensitive-value', stderr: 'failed', durationMs: 4 };
+    },
+  });
+  try {
+    const result = await sandbox.check(
+      {
+        name: 'checks',
+        command: process.execPath,
+        args: ['--version', '$(do-not-execute)'],
+        timeoutMs: 1000,
+      },
+      worktree,
+    );
+    assert.equal(result.exitCode, 2);
+    assert.equal(result.durationMs, 4);
+    assert.ok(!result.output.includes('fake-sensitive-value'));
+    assert.ok(captured?.args.includes('$(do-not-execute)'));
+    assert.ok(captured?.args.includes('--include-managed-config'));
+    assert.notEqual(captured?.cwd, worktree);
+    assert.equal(captured?.env?.GH_TOKEN, undefined);
+    await assert.rejects(access(captured!.cwd!), { code: 'ENOENT' });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('check preserves uncertain worker scratch but cleans verified stopped workers', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-check-preservation-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const worktree = join(directory, 'checkout');
+  await mkdir(worktree);
+  class FakeVerifiedSandbox extends CodexSandbox {
+    override async doctor() {
+      return [{ name: 'unit-test', ok: true, detail: 'Fake; not native isolation evidence.' }];
+    }
+  }
+  for (const kind of ['termination', 'nested-termination', 'timeout', 'aborted'] as const) {
+    const cause = new ProcessError(
+      kind === 'nested-termination' ? 'termination' : kind,
+      'Fake worker exit state.',
+    );
+    const failure = kind === 'nested-termination' ? new AggregateError([cause]) : cause;
+    let launcher: string | undefined;
+    const sandbox = new FakeVerifiedSandbox({
+      codexPath: process.execPath,
+      home: join(directory, kind),
+      executor: async (options) => {
+        launcher = options.cwd;
+        throw failure;
+      },
+    });
+
+    await assert.rejects(
+      sandbox.check(
+        { name: 'fixture', command: process.execPath, args: ['--version'], timeoutMs: 1000 },
+        worktree,
+      ),
+      (error) =>
+        process.platform === 'linux' && !kind.includes('termination')
+          ? hasUncertainTermination(error) && error instanceof Error && error.cause === failure
+          : error === failure,
+    );
+
+    assert.ok(launcher);
+    if (kind.includes('termination') || process.platform === 'linux') await access(launcher);
+    else await assert.rejects(access(launcher), { code: 'ENOENT' });
+  }
+});
+
+test('token-like output is redacted without exposing raw credentials', () => {
+  assert.equal(
+    redactOutput('Authorization: Bearer secretvalue'),
+    'Authorization: Bearer [redacted]',
+  );
+  assert.equal(redactOutput('ghp_12345678901234567890'), '[redacted]');
+});
+
+test('synthetic probe observations fail closed on missing network evidence or forbidden reads', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-synthetic-probe-'));
+  const prerequisites = prerequisiteExecutor();
+  let exposeSentinel = false;
+  let exposeLoopback = false;
+  let baseline = true;
+  let probeCalls = 0;
+  const sandbox = new CodexSandbox({
+    codexPath: process.execPath,
+    home: directory,
+    connectivity: async () => baseline,
+    executor: async (options) => {
+      if (!options.args.includes('sandbox') || options.args.includes('--help'))
+        return prerequisites(options);
+      probeCalls++;
+      const writable = options.args.some((argument) => /workspace"="write"/.test(argument));
+      return syntheticProbe(options, {
+        readWorkspace: true,
+        writeWorkspace: writable,
+        readSentinel: exposeSentinel,
+        writeSentinel: false,
+        writeOutside: false,
+        loopback: exposeLoopback,
+        egress: false,
+        credentials: false,
+        unexpectedPrivateText: 'FAKE_PRIVATE_TEXT_MUST_NOT_REACH_DIAGNOSTICS',
+      });
+    },
+  });
+  try {
+    const accepted = await sandbox.doctor();
+    assert.equal(
+      accepted
+        .filter((check) => check.name !== 'linux-workflow-support')
+        .every((check) => check.ok),
+      true,
+      'Synthetic observations test only the decision logic, not real isolation.',
+    );
+    assert.equal(probeCalls, 2);
+    await assert.rejects(access(join(directory, 'codex', '.sandbox')), { code: 'ENOENT' });
+    baseline = false;
+    assert.equal(
+      (await sandbox.doctor()).find((check) => check.name === 'sandbox-read-network')?.ok,
+      false,
+    );
+    baseline = true;
+    exposeSentinel = true;
+    const failedRead = (await sandbox.doctor()).find((check) => check.name === 'sandbox-read')!;
+    assert.equal(failedRead.ok, false);
+    assert.match(failedRead.detail, /readSentinel=true/);
+    assert.ok(!failedRead.detail.includes('FAKE_PRIVATE_TEXT'));
+    exposeSentinel = false;
+    exposeLoopback = true;
+    const failedNetwork = (await sandbox.doctor()).find(
+      (check) => check.name === 'sandbox-read-network',
+    )!;
+    assert.equal(failedNetwork.ok, false);
+    assert.match(failedNetwork.detail, /loopback=true, publicEgress=false/);
+    assert.ok(!failedNetwork.detail.includes('FAKE_PRIVATE_TEXT'));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('doctor verifies host effects before accepting synthetic private namespace writes', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-probe-host-effects-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const cases = [
+    'private-shadow-only',
+    'outside-during',
+    'outside-after',
+    'canary-content',
+    'canary-identity',
+    'missing-workspace-write',
+    'missing-handshake',
+    'changed-final-report',
+    ...(process.platform === 'linux' ? ['redirected-report' as const] : []),
+  ] as const;
+  for (const scenario of cases) {
+    const prerequisites = prerequisiteExecutor();
+    const sandbox = new CodexSandbox({
+      codexPath: process.execPath,
+      home: join(directory, scenario),
+      connectivity: async () => true,
+      executor: async (options) => {
+        if (!options.args.includes('sandbox') || options.args.includes('--help'))
+          return prerequisites(options);
+        const writable = options.args.some((argument) => /workspace"="write"/.test(argument));
+        const observation = {
+          readWorkspace: true,
+          writeWorkspace: writable,
+          readSentinel: false,
+          writeSentinel: true,
+          writeOutside: true,
+          loopback: false,
+          egress: false,
+          credentials: false,
+        };
+        if (scenario === 'missing-handshake')
+          return { exitCode: 0, stdout: JSON.stringify(observation), stderr: '', durationMs: 1 };
+        const result = await syntheticProbe(options, observation, {
+          missingWorkspaceWrite: scenario === 'missing-workspace-write',
+          redirectedReport: scenario === 'redirected-report',
+          beforeReady: async (paths) => {
+            if (scenario === 'outside-during') await writeFile(paths.outside, paths.nonce);
+            if (scenario === 'canary-content') await writeFile(paths.sentinel, 'changed');
+            if (scenario === 'canary-identity') {
+              const original = await readFile(paths.sentinel, 'utf8');
+              // Keep the old inode allocated, so replacement cannot accidentally reuse it.
+              await rename(paths.sentinel, `${paths.sentinel}-${paths.nonce}`);
+              await writeFile(paths.sentinel, original);
+            }
+          },
+          afterProceed: async (paths) => {
+            if (scenario === 'outside-after') await writeFile(paths.outside, paths.nonce);
+          },
+        });
+        if (scenario === 'changed-final-report')
+          result.stdout = JSON.stringify({ ...observation, writeOutside: false });
+        return result;
+      },
+    });
+
+    if (scenario === 'redirected-report') {
+      await assert.rejects(sandbox.doctor(), hasUncertainTermination);
+      assert.ok((await readdir(join(directory, scenario, 'runtime'))).length > 0);
+      continue;
+    }
+    const checks = await sandbox.doctor();
+    const boundaries = checks.filter((check) =>
+      /^(?:sandbox-read|sandbox-write)$/.test(check.name),
+    );
+    if (scenario === 'private-shadow-only') {
+      assert.equal(boundaries.length, 2);
+      assert.ok(
+        boundaries.every((check) => check.ok),
+        'Synthetic decisions are not native evidence.',
+      );
+      assert.ok(
+        boundaries.every((check) =>
+          check.detail.includes('Private namespace writes observed=true'),
+        ),
+      );
+    } else {
+      assert.ok(
+        boundaries.some((check) => !check.ok),
+        `${scenario} must block execution.`,
+      );
+    }
+    assert.deepEqual(await readdir(join(directory, scenario, 'runtime')), []);
+  }
+});
+
+test('doctor preserves a live probe when malformed reporting is followed by uncertain shutdown', async (t) => {
+  const home = await mkdtemp(join(tmpdir(), 'agentgate-probe-uncertain-report-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const prerequisites = prerequisiteExecutor();
+  const failure = new Error('Fake wrapped shutdown failure', {
+    cause: new AggregateError([new ProcessError('termination', 'Fake unknown child state.')]),
+  });
+  let launcher: string | undefined;
+  const sandbox = new CodexSandbox({
+    codexPath: process.execPath,
+    home,
+    connectivity: async () => true,
+    executor: async (options) => {
+      if (!options.args.includes('sandbox') || options.args.includes('--help'))
+        return prerequisites(options);
+      launcher = options.cwd;
+      const script = options.args[options.args.indexOf('-e') + 1]!;
+      const paths = JSON.parse(/\nconst p=(.+);\n/.exec(script)![1]!) as SyntheticProbePaths;
+      await writeFile(paths.ready, '{}', { flag: 'wx' });
+      return new Promise((_, reject) => {
+        const cancelled = () => reject(failure);
+        options.signal!.addEventListener('abort', cancelled, { once: true });
+        if (options.signal!.aborted) cancelled();
+      });
+    },
+  });
+
+  await assert.rejects(sandbox.doctor(), (error) => error === failure);
+  assert.ok(launcher);
+  await access(launcher);
+  const fixtures = (await readdir(join(home, 'runtime'))).filter((name) =>
+    name.startsWith('probe-'),
+  );
+  assert.equal(fixtures.length, 1);
+  await access(join(home, 'runtime', fixtures[0]!, 'fake-secret.txt'));
+});

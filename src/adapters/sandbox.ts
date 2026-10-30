@@ -1,0 +1,939 @@
+import { randomUUID } from 'node:crypto';
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { createConnection, createServer } from 'node:net';
+import { homedir, userInfo } from 'node:os';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { z } from 'zod';
+import { hasUncertainTermination } from '../core/errors.ts';
+import {
+  CheckSchema,
+  type CheckResult,
+  type CheckSpec,
+  type DoctorCheck,
+  type SandboxRunner,
+} from '../core/contracts.ts';
+import {
+  execute,
+  ProcessError,
+  resolveCommand,
+  type ExecuteResult,
+  type ExecuteOptions,
+  type Executor,
+} from './process.ts';
+
+export const CODEX_VERSION = process.platform === 'win32' ? '0.166.0' : '0.154.0';
+export const DISABLED_FEATURES = [
+  'apps',
+  'plugins',
+  'remote_plugin',
+  'hooks',
+  'browser_use',
+  'browser_use_external',
+  'computer_use',
+  'image_generation',
+  'skill_mcp_dependency_install',
+  'multi_agent',
+] as const;
+
+export interface CodexOptions {
+  home: string;
+  codexPath?: string;
+  executor?: Executor;
+  /** Injection for offline behavior tests, never a replacement for live acceptance evidence. */
+  connectivity?: (host: string, port: number, signal?: AbortSignal) => Promise<boolean>;
+}
+
+export interface SandboxSession {
+  /** Canonical Linux executable selected for this policy and its matching invocation. */
+  codexExecutable?: string;
+  /** Validated npm entry point available only to explicitly prepared controller check sessions. */
+  npmExecutable?: string;
+  launcher: string;
+  profile: string;
+  env: NodeJS.ProcessEnv;
+  configArgs: string[];
+  cleanup(): Promise<void>;
+}
+
+/** Native Linux descendants can leave the launcher's process group; stops remain unverified. */
+export async function executeSandbox(
+  options: ExecuteOptions,
+  executor: Executor = execute,
+): Promise<ExecuteResult> {
+  try {
+    return await executor(options);
+  } catch (error) {
+    if (process.platform !== 'linux' || hasUncertainTermination(error)) throw error;
+    const pending: unknown[] = [error];
+    const seen = new Set<object>();
+    let unverifiedStop = options.signal?.aborted ?? false;
+    while (pending.length && !unverifiedStop) {
+      const value = pending.pop();
+      if (value === null || typeof value !== 'object' || seen.has(value)) continue;
+      seen.add(value);
+      if ('kind' in value && ['aborted', 'timeout', 'output-limit'].includes(String(value.kind))) {
+        unverifiedStop = true;
+        break;
+      }
+      if ('cause' in value) pending.push(value.cause);
+      if (value instanceof AggregateError) pending.push(...value.errors);
+    }
+    if (unverifiedStop) {
+      const failure = new ProcessError(
+        'termination',
+        'Linux native sandbox descendant shutdown is unverified; retain the lock and fixtures.',
+      );
+      failure.cause = error;
+      throw failure;
+    }
+    throw error;
+  }
+}
+
+function includeWorkflowSupport(checks: DoctorCheck[]): DoctorCheck[] {
+  if (process.platform !== 'linux') return checks;
+  return [
+    ...checks,
+    {
+      name: 'linux-workflow-support',
+      ok: false,
+      detail:
+        'Linux workflows are blocked: native descendant cancellation and captured Node child streams are not supported by the verified runtime. Physical diagnostics do not authorize execution.',
+    },
+  ];
+}
+
+/** Cleanup failure must never hide an uncertain process-tree termination. */
+export async function cleanupPreservingError(
+  cleanup: () => Promise<void>,
+  operationFailed: boolean,
+): Promise<void> {
+  try {
+    await cleanup();
+  } catch (error) {
+    if (!operationFailed) throw error;
+  }
+}
+
+/** Only infrastructure variables reach agents/checks; never tokens, proxies or shell injection settings. */
+export function isolatedEnvironment(
+  home: string,
+  temporary: string,
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const allowed = new Set([
+    'path',
+    'systemroot',
+    'windir',
+    'comspec',
+    'pathext',
+    'programfiles',
+    'programfiles(x86)',
+    'systemdrive',
+    'processor_architecture',
+    'number_of_processors',
+    'lang',
+    'lc_all',
+  ]);
+  if (process.platform === 'win32') {
+    allowed.delete('systemroot');
+    allowed.delete('systemdrive');
+  }
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (allowed.has(key.toLowerCase()) && value !== undefined) env[key] = value;
+  }
+  env.CODEX_HOME = join(resolve(home), 'codex');
+  env.HOME = homedir();
+  if (process.platform === 'win32') {
+    env.USERPROFILE = homedir();
+    // Keep infrastructure identity tied to the OS, never caller-supplied environment values.
+    env.USERNAME = userInfo().username;
+    // MXC reads these from its host environment even when the child environment is explicit.
+    for (const key of ['LOCALAPPDATA', 'SystemRoot']) {
+      const path = process.env[key];
+      if (!path || !isAbsolute(path) || [...path].some((character) => character.charCodeAt(0) < 32))
+        throw new Error(`Windows host ${key} must name a nonempty absolute path.`);
+      env[key] = path;
+    }
+    const systemDrive = process.env.SystemDrive;
+    if (!systemDrive || !/^[a-zA-Z]:$/.test(systemDrive))
+      throw new Error('Windows host SystemDrive must name a drive letter.');
+    env.SystemDrive = systemDrive;
+    // Node's default module realpath walks denied ancestors. Keep lexical module paths
+    // without granting ancestor reads; never concatenate caller-supplied Node options.
+    env.NODE_OPTIONS = '--preserve-symlinks --preserve-symlinks-main';
+  }
+  env.TEMP = temporary;
+  env.TMP = temporary;
+  env.TMPDIR = temporary;
+  env.NO_COLOR = '1';
+  env.CI = '1';
+  env.GIT_TERMINAL_PROMPT = '0';
+  return env;
+}
+
+function config(key: string, value: unknown): string[] {
+  return ['-c', `${key}=${tomlValue(value)}`];
+}
+
+function tomlValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(tomlValue).join(',')}]`;
+  if (value && typeof value === 'object')
+    return `{${Object.entries(value)
+      .filter(([, entry]) => entry !== undefined)
+      .map(([key, entry]) => `${JSON.stringify(key)}=${tomlValue(entry)}`)
+      .join(',')}}`;
+  const scalar = JSON.stringify(value);
+  if (scalar === undefined || value === null)
+    throw new Error('Invalid policy configuration value.');
+  return scalar;
+}
+
+export async function createSandboxSession(
+  home: string,
+  worktree?: string,
+  writable = false,
+  codexExecutable?: string,
+  npmExecutable?: string,
+): Promise<SandboxSession> {
+  const root = await canonicalDirectory(resolve(home), true);
+  const runtime = join(root, 'runtime');
+  for (const owned of [root, runtime, join(root, 'codex')]) {
+    await canonicalDirectory(owned, true);
+    if (process.platform !== 'win32') await chmod(owned, 0o700);
+  }
+  const target = worktree ? await canonicalDirectory(resolve(worktree)) : undefined;
+  const runtimeExecutable =
+    process.platform === 'linux' && codexExecutable
+      ? await resolveSandboxExecutable(codexExecutable, root, target)
+      : undefined;
+  const npmRuntime =
+    process.platform === 'linux' && npmExecutable
+      ? await resolveNpmRuntime(npmExecutable, root, target)
+      : undefined;
+  const launcher = await mkdtemp(join(runtime, 'launch-'));
+  const temporary = join(launcher, 'tmp');
+  await mkdir(temporary, { mode: 0o700 });
+  const profile = `agentgate-${randomUUID()}`;
+  const prefix = `permissions.${profile}`;
+  const env = isolatedEnvironment(root, temporary);
+  const filesystem: Record<string, string> = {
+    ':root': 'deny',
+    ':minimal': 'read',
+    [launcher]: 'read',
+    [temporary]: 'write',
+    [dirname(process.execPath)]: 'read',
+    [join(root, 'codex')]: 'deny',
+  };
+  // Linux Codex re-executes itself after constructing the restricted filesystem view.
+  // Grant only the controller-selected executable, never its installation directory.
+  if (runtimeExecutable) filesystem[runtimeExecutable] = 'read';
+  if (npmRuntime) filesystem[npmRuntime.directory] = 'read';
+  if (target) {
+    filesystem[target] = writable ? 'write' : 'read';
+    for (const protectedName of ['.git', '.agents', '.codex', '.aws'])
+      filesystem[join(target, protectedName)] = 'read';
+  }
+  const configArgs = [
+    ...config('project_root_markers', []),
+    ...config('forced_login_method', 'chatgpt'),
+    ...config('model_provider', 'openai'),
+    ...config('web_search', 'disabled'),
+    ...config('approval_policy', 'never'),
+    ...config('allow_login_shell', false),
+    ...config('shell_environment_policy.inherit', 'none'),
+    ...config('shell_environment_policy.set', env),
+    ...config('default_permissions', profile),
+    ...config(`${prefix}.filesystem`, filesystem),
+    ...config(`${prefix}.network.enabled`, false),
+    ...DISABLED_FEATURES.flatMap((feature) => config(`features.${feature}`, false)),
+  ];
+  // Legacy Windows tokens cannot enforce default-deny reads. Explicit MXC fails if unsupported;
+  // unlike prefer_mxc, it never selects a legacy fallback. Disabled networking also denies loopback.
+  if (process.platform === 'win32') configArgs.push(...config('windows.sandbox', 'mxc'));
+  return {
+    codexExecutable: runtimeExecutable,
+    npmExecutable: npmRuntime?.executable,
+    launcher,
+    profile,
+    env,
+    configArgs,
+    async cleanup() {
+      const child = relative(runtime, launcher);
+      if (!child || isAbsolute(child) || child.startsWith('..'))
+        throw new Error('Unsafe scratch cleanup path.');
+      await canonicalDirectory(runtime);
+      await canonicalDirectory(launcher);
+      await rm(launcher, { recursive: true, force: true });
+    },
+  };
+}
+
+/** Resolve approved check commands once; Linux npm uses the pinned controller Node runtime. */
+export async function createCheckSandboxSession(
+  home: string,
+  worktree: string,
+  spec: Pick<CheckSpec, 'command' | 'args'>,
+  codexExecutable?: string,
+): Promise<SandboxSession & { checkCommand: { command: string; args: string[] } }> {
+  const selected = await resolveCommand(
+    spec.command,
+    spec.args,
+    isolatedEnvironment(home, join(home, 'runtime')),
+    worktree,
+  );
+  const canonical =
+    process.platform === 'linux' ? await realpath(selected.command) : selected.command;
+  const npmExecutable =
+    process.platform === 'linux' && basename(canonical) === 'npm-cli.js'
+      ? selected.command
+      : undefined;
+  const session = await createSandboxSession(home, worktree, true, codexExecutable, npmExecutable);
+  return {
+    ...session,
+    checkCommand: session.npmExecutable
+      ? { command: process.execPath, args: [session.npmExecutable, ...selected.args] }
+      : { command: canonical, args: selected.args },
+  };
+}
+
+async function resolveNpmRuntime(executable: string, home: string, worktree?: string) {
+  const canonical = await realpath(executable);
+  if (basename(canonical) !== 'npm-cli.js' || basename(dirname(canonical)) !== 'bin')
+    throw new Error('The selected npm executable does not use the supported package layout.');
+  const directory = dirname(dirname(canonical));
+  if (basename(directory) !== 'npm' || basename(dirname(directory)) !== 'node_modules')
+    throw new Error('The npm runtime must be its installed node_modules/npm package.');
+  const within = (parent: string, child: string) => {
+    const path = relative(parent, child);
+    return !path || (!isAbsolute(path) && path !== '..' && !path.startsWith(`..${sep}`));
+  };
+  const candidates = [resolve(executable), canonical, directory];
+  for (const denied of [home, ...(worktree ? [worktree] : [])]) {
+    if (candidates.some((candidate) => within(denied, candidate)) || within(directory, denied))
+      throw new Error('The npm runtime must be outside the worktree and AgentGate state.');
+  }
+  if (within(directory, homedir())) throw new Error('The npm runtime cannot grant the user home.');
+  const metadataPath = join(directory, 'package.json');
+  const metadataFile = await lstat(metadataPath);
+  if (!metadataFile.isFile() || metadataFile.isSymbolicLink() || metadataFile.size > 1024 * 1024)
+    throw new Error('The npm runtime metadata is not a bounded regular file.');
+  const metadata = z
+    .object({ name: z.literal('npm'), bin: z.object({ npm: z.string() }) })
+    .parse(JSON.parse(await readFile(metadataPath, 'utf8')));
+  if (resolve(directory, metadata.bin.npm) !== canonical || !(await lstat(canonical)).isFile())
+    throw new Error('The npm runtime metadata does not match its selected entry point.');
+  return { directory, executable: canonical };
+}
+
+async function resolveSandboxExecutable(
+  command: string,
+  home: string,
+  worktree?: string,
+): Promise<string> {
+  const env = isolatedEnvironment(home, join(home, 'runtime'));
+  const selected = await resolveCommand(command, [], env, worktree ?? home);
+  const canonical = await realpath(selected.command);
+  const candidates = [canonical, selected.command];
+  if (isAbsolute(command)) candidates.push(resolve(command));
+  for (const directory of [home, ...(worktree ? [worktree] : [])]) {
+    if (
+      candidates.some((candidate) => {
+        const child = relative(directory, candidate);
+        return !child || (!isAbsolute(child) && child !== '..' && !child.startsWith(`..${sep}`));
+      })
+    )
+      throw new Error('The Codex executable must be outside the worktree and AgentGate state.');
+  }
+  if (!(await lstat(canonical)).isFile()) throw new Error('The Codex executable must be a file.');
+  return canonical;
+}
+
+/** Do not grant or recursively remove a redirected controller directory or worktree. */
+async function canonicalDirectory(path: string, create = false): Promise<string> {
+  // Check every lexical ancestor: realpath alone would silently follow a junction.
+  const parent = dirname(path);
+  if (parent !== path) await canonicalDirectory(parent, create);
+  let entry;
+  try {
+    entry = await lstat(path, { bigint: true });
+  } catch (error) {
+    if (!create || !(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT')
+      throw error;
+    await mkdir(path, { mode: 0o700 });
+    entry = await lstat(path, { bigint: true });
+  }
+  if (!entry.isDirectory() || entry.isSymbolicLink())
+    throw new Error('Sandbox directories must be real canonical directories, without links.');
+  // DOS 8.3 names and case aliases identify the same directory without being links.
+  const canonical = await realpath(path);
+  const canonicalEntry = await lstat(canonical, { bigint: true });
+  if (
+    !canonicalEntry.isDirectory() ||
+    canonicalEntry.isSymbolicLink() ||
+    canonicalEntry.dev !== entry.dev ||
+    canonicalEntry.ino !== entry.ino
+  )
+    throw new Error('Sandbox directory identity changed during validation.');
+  return canonical;
+}
+
+export function diagnostic(error: unknown): string {
+  if (error instanceof ProcessError) return `${error.kind}: ${error.message}`;
+  if (error instanceof Error && /^(EACCES|EPERM|ENOENT):/.test(error.message))
+    return error.message.slice(0, 200);
+  return 'The prerequisite could not be established.';
+}
+
+function sandboxFailure(result: ExecuteResult): string {
+  const line = result.stderr
+    .split(/\r?\n/)
+    .find((entry) =>
+      /sandbox failed|CreateRestrictedToken|bwrap|unknown field|invalid|error:|requires|denied/i.test(
+        entry,
+      ),
+    );
+  return line
+    ? line.replace(/(?:sk-|gh[pousr]_)[A-Za-z0-9_-]+/g, '[redacted]').slice(0, 240)
+    : `Sandbox process exited ${result.exitCode}.`;
+}
+
+export function redactOutput(output: string): string {
+  return output
+    .replace(
+      /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,})\b/g,
+      '[redacted]',
+    )
+    .replace(/(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s]+/gi, '$1[redacted]')
+    .replace(/((?:password|token|secret|api[_-]?key)\s*[:=]\s*)[^\s,;]+/gi, '$1[redacted]');
+}
+
+async function reachable(host: string, port: number, signal?: AbortSignal): Promise<boolean> {
+  signal?.throwIfAborted();
+  return new Promise((resolveReachable, reject) => {
+    const socket = createConnection({ host, port });
+    const abort = () => {
+      socket.destroy();
+      reject(signal?.reason ?? new Error('Connectivity check cancelled.'));
+    };
+    const finish = (value: boolean) => {
+      signal?.removeEventListener('abort', abort);
+      socket.destroy();
+      resolveReachable(value);
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    socket.setTimeout(2_500, () => finish(false));
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+  });
+}
+
+const ProbeSchema = z.object({
+  readWorkspace: z.boolean(),
+  writeWorkspace: z.boolean(),
+  readSentinel: z.boolean(),
+  writeSentinel: z.boolean(),
+  writeOutside: z.boolean(),
+  loopback: z.boolean(),
+  egress: z.boolean(),
+  credentials: z.boolean(),
+});
+
+interface ProbePaths {
+  allowed: string;
+  sentinel: string;
+  outside: string;
+  write: string;
+  port: number;
+  nonce: string;
+  ready: string;
+  proceed: string;
+}
+
+interface ProbeCanary {
+  content: string;
+  dev: bigint;
+  ino: bigint;
+}
+
+async function absent(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return false;
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return true;
+    throw error;
+  }
+}
+
+async function probeHostUnchanged(
+  paths: ProbePaths,
+  canary: ProbeCanary,
+  writable: boolean,
+): Promise<boolean> {
+  if (!(await absent(paths.outside))) return false;
+  try {
+    const identity = await lstat(paths.sentinel, { bigint: true });
+    if (
+      identity.dev !== canary.dev ||
+      identity.ino !== canary.ino ||
+      identity.size !== BigInt(Buffer.byteLength(canary.content)) ||
+      (await readFile(paths.sentinel, 'utf8')) !== canary.content
+    )
+      return false;
+    if (!writable) return absent(paths.write);
+    const written = await lstat(paths.write);
+    return (
+      written.isFile() &&
+      !written.isSymbolicLink() &&
+      written.size === Buffer.byteLength(paths.nonce) &&
+      (await readFile(paths.write, 'utf8')) === paths.nonce
+    );
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function probeScript(paths: ProbePaths): string {
+  // Only controller-generated fixture paths enter this fixed script, never issue/model input.
+  return `const fs=require('node:fs');const net=require('node:net');
+const p=${JSON.stringify(paths)};
+function attempt(fn){try{fn();return true}catch{return false}}
+function connect(host,port){return new Promise(resolve=>{const s=net.createConnection({host,port});const done=v=>{s.destroy();resolve(v)};s.setTimeout(2500,()=>done(false));s.once('connect',()=>done(true));s.once('error',()=>done(false))})}
+(async()=>{const result={readWorkspace:attempt(()=>fs.readFileSync(p.allowed)),writeWorkspace:attempt(()=>fs.writeFileSync(p.write,p.nonce,{flag:'wx'})),readSentinel:attempt(()=>fs.readFileSync(p.sentinel)),writeSentinel:attempt(()=>fs.writeFileSync(p.sentinel,p.nonce)),writeOutside:attempt(()=>fs.writeFileSync(p.outside,p.nonce,{flag:'wx'})),loopback:await connect('127.0.0.1',p.port),egress:await connect('1.1.1.1',443),credentials:['GH_TOKEN','GITHUB_TOKEN','OPENAI_API_KEY','CODEX_API_KEY','ANTHROPIC_API_KEY','SSH_AUTH_SOCK'].some(k=>Boolean(process.env[k]))};
+fs.writeFileSync(p.ready+'.tmp',JSON.stringify({nonce:p.nonce,observation:result}),{flag:'wx'});fs.renameSync(p.ready+'.tmp',p.ready);
+const deadline=Date.now()+10000;while(!attempt(()=>{if(fs.readFileSync(p.proceed,'utf8')!==p.nonce)throw new Error()})){if(Date.now()>deadline)throw new Error();await new Promise(resolve=>setTimeout(resolve,25))}
+console.log(JSON.stringify(result))})().catch(()=>process.exit(2));`;
+}
+
+export class CodexSandbox implements SandboxRunner {
+  readonly home: string;
+  readonly codexPath: string;
+  private readonly executor: Executor;
+  private readonly connectivity: (
+    host: string,
+    port: number,
+    signal?: AbortSignal,
+  ) => Promise<boolean>;
+
+  constructor(options: CodexOptions) {
+    this.home = resolve(options.home);
+    this.codexPath = options.codexPath ?? 'codex';
+    this.executor = options.executor ?? execute;
+    this.connectivity = options.connectivity ?? reachable;
+  }
+
+  async prerequisites(session: SandboxSession, signal?: AbortSignal): Promise<DoctorCheck[]> {
+    const checks: DoctorCheck[] = [];
+    const command = async (args: string[]) => {
+      signal?.throwIfAborted();
+      const result = await this.executor({
+        command: session.codexExecutable ?? this.codexPath,
+        args: [...session.configArgs, ...args],
+        cwd: session.launcher,
+        env: session.env,
+        timeoutMs: 15_000,
+        maxOutputBytes: 1024 * 1024,
+        signal,
+      });
+      signal?.throwIfAborted();
+      return result;
+    };
+    try {
+      const result = await command(['--version']);
+      const ok = result.exitCode === 0 && result.stdout.trim() === `codex-cli ${CODEX_VERSION}`;
+      checks.push({
+        name: 'codex-version',
+        ok,
+        detail: ok
+          ? `Verified Codex CLI ${CODEX_VERSION}.`
+          : `Codex CLI ${CODEX_VERSION} is required; other versions need compatibility validation.`,
+      });
+      if (!ok) return checks;
+      const features = await command(['features', 'list']);
+      const states = new Map<string, string>(
+        features.stdout.split(/\r?\n/).map((line) => {
+          const match = /^(\S+)\s+.+\s+(true|false)\s*$/.exec(line);
+          return match ? [match[1]!, match[2]!] : ['', ''];
+        }),
+      );
+      const enabled = DISABLED_FEATURES.filter((name) => states.get(name) !== 'false');
+      checks.push({
+        name: 'codex-integrations',
+        ok: features.exitCode === 0 && enabled.length === 0,
+        detail:
+          features.exitCode !== 0
+            ? `Feature configuration failed: ${sandboxFailure(features)}`
+            : enabled.length
+              ? `Required features could not be disabled: ${enabled.join(', ')}.`
+              : 'External integrations, hooks, and subagents are disabled in the effective feature configuration.',
+      });
+      const mcp = await command(['mcp', 'list', '--json']);
+      let mcpDisabled = false;
+      try {
+        const entries: unknown = JSON.parse(mcp.stdout);
+        mcpDisabled =
+          Array.isArray(entries) &&
+          entries.every(
+            (entry) =>
+              typeof entry === 'object' &&
+              entry !== null &&
+              'enabled' in entry &&
+              entry.enabled === false,
+          );
+      } catch {
+        /* Invalid configuration output cannot authorize execution. */
+      }
+      checks.push({
+        name: 'codex-mcp',
+        ok: mcp.exitCode === 0 && mcpDisabled,
+        detail:
+          mcp.exitCode !== 0
+            ? `MCP configuration failed: ${sandboxFailure(mcp)}`
+            : mcpDisabled
+              ? 'No enabled direct MCP servers.'
+              : 'MCP configuration could not be proven empty/disabled; remove integrations from the AgentGate profile or managed defaults.',
+      });
+      const auth = await command(['login', 'status']);
+      const chatgpt =
+        auth.exitCode === 0 &&
+        /logged in using chatgpt/i.test(`${auth.stdout}\n${auth.stderr}`) &&
+        !/using an? api key/i.test(`${auth.stdout}\n${auth.stderr}`);
+      checks.push({
+        name: 'codex-auth',
+        ok: chatgpt,
+        detail: chatgpt
+          ? 'The separate AgentGate profile uses ChatGPT authentication.'
+          : 'Sign in with ChatGPT using the native Codex login flow and CODEX_HOME set to the AgentGate codex directory. AgentGate never copies credentials or falls back to API billing.',
+      });
+      const help = await command(['sandbox', '--help']);
+      const supported =
+        help.exitCode === 0 &&
+        help.stdout.includes('--permission-profile') &&
+        help.stdout.includes('--include-managed-config');
+      checks.push({
+        name: 'sandbox-interface',
+        ok: supported,
+        detail: supported
+          ? 'The native permission-profile sandbox interface is available.'
+          : 'The expected native sandbox permission-profile interface is unavailable.',
+      });
+    } catch (error) {
+      if (hasUncertainTermination(error)) throw error;
+      signal?.throwIfAborted();
+      checks.push({ name: 'codex-prerequisites', ok: false, detail: diagnostic(error) });
+    }
+    return checks;
+  }
+
+  async doctor(signal?: AbortSignal): Promise<DoctorCheck[]> {
+    signal?.throwIfAborted();
+    if (process.platform !== 'win32' && process.platform !== 'linux')
+      return [
+        {
+          name: 'platform',
+          ok: false,
+          detail: 'AgentGate supports native Windows and Linux only.',
+        },
+      ];
+    let session: SandboxSession | undefined;
+    let failed = false;
+    let uncertain = false;
+    try {
+      session = await createSandboxSession(this.home, undefined, false, this.codexPath);
+      const checks = await this.prerequisites(session, signal);
+      signal?.throwIfAborted();
+      if (checks.some((check) => !check.ok && check.name !== 'codex-auth'))
+        return includeWorkflowSupport(checks);
+      checks.push(...(await this.probeIsolation(signal)));
+      return includeWorkflowSupport(checks);
+    } catch (error) {
+      failed = true;
+      uncertain = hasUncertainTermination(error);
+      if (uncertain) throw error;
+      signal?.throwIfAborted();
+      return includeWorkflowSupport([
+        { name: 'sandbox-doctor', ok: false, detail: diagnostic(error) },
+      ]);
+    } finally {
+      if (!uncertain) await cleanupPreservingError(async () => session?.cleanup(), failed);
+    }
+  }
+
+  private async runIsolationProbe(
+    session: SandboxSession,
+    paths: ProbePaths,
+    canary: ProbeCanary,
+    writable: boolean,
+    signal?: AbortSignal,
+  ): Promise<{ result: ExecuteResult; hostVerified: boolean }> {
+    const cancellation = new AbortController();
+    const workerSignal = AbortSignal.any([cancellation.signal, ...(signal ? [signal] : [])]);
+    let stopped = false;
+    const execution = executeSandbox(
+      {
+        command: session.codexExecutable ?? this.codexPath,
+        linuxPipeTransport: true,
+        args: [
+          ...session.configArgs,
+          'sandbox',
+          '--include-managed-config',
+          '-P',
+          session.profile,
+          '-C',
+          session.launcher,
+          '--',
+          process.execPath,
+          '-e',
+          probeScript(paths),
+        ],
+        cwd: session.launcher,
+        env: session.env,
+        timeoutMs: 20_000,
+        maxOutputBytes: 128 * 1024,
+        signal: workerSignal,
+      },
+      this.executor,
+    )
+      .then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error }),
+      )
+      .finally(() => {
+        stopped = true;
+      });
+    const stop = async () => {
+      cancellation.abort();
+      const outcome = await execution;
+      // Unverified shutdown takes precedence over a malformed report or host-read error.
+      if ('error' in outcome && hasUncertainTermination(outcome.error)) throw outcome.error;
+    };
+    try {
+      const deadline = Date.now() + 20_000;
+      let report: z.infer<typeof ProbeSchema> | undefined;
+      while (!report) {
+        workerSignal.throwIfAborted();
+        if (stopped) {
+          const outcome = await execution;
+          if ('error' in outcome) throw outcome.error;
+          return { result: outcome.result, hostVerified: false };
+        }
+        try {
+          const reportFile = await lstat(paths.ready);
+          if (!reportFile.isFile() || reportFile.isSymbolicLink() || reportFile.size > 128 * 1024)
+            throw new Error('Sandbox probe report must be a bounded regular file.');
+          const ready = z
+            .object({ nonce: z.literal(paths.nonce), observation: ProbeSchema })
+            .parse(JSON.parse(await readFile(paths.ready, 'utf8')));
+          report = ready.observation;
+        } catch (error) {
+          if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT')
+            throw error;
+        }
+        if (Date.now() > deadline) throw new Error('Sandbox probe did not complete its handshake.');
+        if (!report) await delay(25, undefined, { signal: workerSignal });
+      }
+      if (stopped) throw new Error('Sandbox probe exited before live host verification.');
+      const during = await probeHostUnchanged(paths, canary, writable);
+      if (stopped) throw new Error('Sandbox probe exited during live host verification.');
+      await writeFile(paths.proceed, paths.nonce, { flag: 'wx' });
+      const outcome = await execution;
+      if ('error' in outcome) throw outcome.error;
+      if (outcome.result.exitCode !== 0) return { result: outcome.result, hostVerified: false };
+      const final = ProbeSchema.parse(JSON.parse(outcome.result.stdout.trim()));
+      if (JSON.stringify(final) !== JSON.stringify(report))
+        throw new Error('Sandbox probe changed its observations after host verification.');
+      const after = await probeHostUnchanged(paths, canary, writable);
+      return { result: outcome.result, hostVerified: during && after };
+    } finally {
+      await stop();
+    }
+  }
+
+  private async probeIsolation(signal?: AbortSignal): Promise<DoctorCheck[]> {
+    signal?.throwIfAborted();
+    const fixture = await mkdtemp(join(this.home, 'runtime', 'probe-'));
+    const workspace = join(fixture, 'workspace');
+    await mkdir(workspace);
+    const allowed = join(workspace, 'allowed.txt');
+    const sentinel = join(fixture, 'fake-secret.txt');
+    await writeFile(allowed, 'AgentGate sandbox fixture');
+    const content = `FAKE-SECRET-${randomUUID()}`;
+    await writeFile(sentinel, content, { mode: 0o600 });
+    const identity = await lstat(sentinel, { bigint: true });
+    const canary = { content, dev: identity.dev, ino: identity.ino };
+    const server = createServer((socket) => socket.end());
+    const checks: DoctorCheck[] = [];
+    let failed = false;
+    let uncertain = false;
+    try {
+      await new Promise<void>((resolveListen, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', resolveListen);
+      });
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('No probe port.');
+      signal?.throwIfAborted();
+      const egressBaseline = await this.connectivity('1.1.1.1', 443, signal);
+      for (const writable of [false, true]) {
+        signal?.throwIfAborted();
+        const session = await createSandboxSession(this.home, workspace, writable, this.codexPath);
+        let invocationFailed = false;
+        let invocationUncertain = false;
+        try {
+          signal?.throwIfAborted();
+          const { result, hostVerified } = await this.runIsolationProbe(
+            session,
+            {
+              allowed,
+              sentinel,
+              outside: join(fixture, `forbidden-${writable}.txt`),
+              write: join(workspace, writable ? 'write-mode.txt' : 'readonly-mode.txt'),
+              port: address.port,
+              nonce: randomUUID(),
+              ready: join(session.env.TMPDIR!, 'probe-ready.json'),
+              proceed: join(session.env.TMPDIR!, 'probe-proceed.txt'),
+            },
+            canary,
+            writable,
+            signal,
+          );
+          signal?.throwIfAborted();
+          if (result.exitCode !== 0) {
+            checks.push({
+              name: writable ? 'sandbox-write' : 'sandbox-read',
+              ok: false,
+              detail: sandboxFailure(result),
+            });
+            break;
+          }
+          const value = ProbeSchema.safeParse(JSON.parse(result.stdout.trim()));
+          if (!value.success) {
+            checks.push({
+              name: 'sandbox-probe',
+              ok: false,
+              detail: 'Sandbox probe did not return the expected observation data.',
+            });
+            break;
+          }
+          const p = value.data;
+          const filesystemOk =
+            p.readWorkspace &&
+            p.writeWorkspace === writable &&
+            !p.readSentinel &&
+            hostVerified &&
+            !p.credentials;
+          checks.push({
+            name: writable ? 'sandbox-write' : 'sandbox-read',
+            ok: filesystemOk,
+            detail: filesystemOk
+              ? `Live fixture verified workspace permissions, denied fake-secret read, unchanged outside host files while running and after exit, and absent credentials. Private namespace writes observed=${p.writeOutside || p.writeSentinel}.`
+              : `Live fixture failed a filesystem or environment boundary; execution is blocked. Observed readWorkspace=${p.readWorkspace}, writeWorkspace=${p.writeWorkspace} (expected ${writable}), readSentinel=${p.readSentinel}, writeOutside=${p.writeOutside}, hostVerified=${hostVerified}, credentials=${p.credentials}.`,
+          });
+          checks.push({
+            name: writable ? 'sandbox-write-network' : 'sandbox-read-network',
+            ok: egressBaseline && !p.loopback && !p.egress,
+            detail: !egressBaseline
+              ? `The controller could not establish the external TCP baseline; network isolation remains unverified. Observed loopback=${p.loopback}, publicEgress=${p.egress}.`
+              : !p.loopback && !p.egress
+                ? 'Live probe blocked loopback and public TCP connections; controller baseline was reachable.'
+                : `The sandbox allowed a network connection; execution is blocked. Observed loopback=${p.loopback}, publicEgress=${p.egress}; controller baseline was reachable.`,
+          });
+        } catch (error) {
+          invocationFailed = true;
+          invocationUncertain = hasUncertainTermination(error);
+          if (invocationUncertain) throw error;
+          signal?.throwIfAborted();
+          checks.push({
+            name: writable ? 'sandbox-write' : 'sandbox-read',
+            ok: false,
+            detail: diagnostic(error),
+          });
+          break;
+        } finally {
+          if (!invocationUncertain)
+            await cleanupPreservingError(() => session.cleanup(), invocationFailed);
+        }
+      }
+      return checks;
+    } catch (error) {
+      failed = true;
+      uncertain = hasUncertainTermination(error);
+      throw error;
+    } finally {
+      server.close();
+      if (!uncertain)
+        await cleanupPreservingError(async () => {
+          const safe = relative(join(this.home, 'runtime'), fixture);
+          if (safe && !safe.startsWith('..') && !isAbsolute(safe)) {
+            await canonicalDirectory(join(this.home, 'runtime'));
+            await canonicalDirectory(fixture);
+            await rm(fixture, { recursive: true, force: true });
+          }
+        }, failed);
+    }
+  }
+
+  async check(spec: CheckSpec, worktree: string, signal?: AbortSignal): Promise<CheckResult> {
+    spec = CheckSchema.parse(spec);
+    signal?.throwIfAborted();
+    const doctor = await this.doctor(signal);
+    signal?.throwIfAborted();
+    const blocked = doctor.filter((check) => !check.ok);
+    if (!doctor.length || blocked.length)
+      throw new Error(
+        `Sandbox blocked: ${blocked.map((check) => `${check.name}: ${check.detail}`).join(' ')}`,
+      );
+    const session = await createCheckSandboxSession(this.home, worktree, spec, this.codexPath);
+    let failed = false;
+    let uncertain = false;
+    try {
+      signal?.throwIfAborted();
+      const command = session.checkCommand;
+      // The fixed Node trampoline changes cwd without exposing the project to Codex config discovery.
+      const trampoline = `const {spawn}=require('node:child_process');const [cwd,cmd,...args]=process.argv.slice(1);process.chdir(cwd);const p=spawn(cmd,args,{shell:false,stdio:'inherit',windowsHide:true});p.on('error',error=>{require('node:fs').writeSync(2,JSON.stringify({code:typeof error.code==='string'?error.code:null})+'\\n');process.exit(127)});p.on('exit',(code)=>process.exit(code??1));`;
+      const result = await executeSandbox(
+        {
+          command: session.codexExecutable ?? this.codexPath,
+          linuxPipeTransport: true,
+          args: [
+            ...session.configArgs,
+            'sandbox',
+            '--include-managed-config',
+            '-P',
+            session.profile,
+            '-C',
+            session.launcher,
+            '--',
+            process.execPath,
+            '-e',
+            trampoline,
+            resolve(worktree),
+            command.command,
+            ...command.args,
+          ],
+          cwd: session.launcher,
+          env: session.env,
+          timeoutMs: Math.min(spec.timeoutMs, 600_000),
+          signal,
+        },
+        this.executor,
+      );
+      return {
+        name: spec.name,
+        exitCode: result.exitCode,
+        output: redactOutput(`${result.stdout}${result.stderr ? `\n${result.stderr}` : ''}`),
+        durationMs: result.durationMs,
+      };
+    } catch (error) {
+      failed = true;
+      uncertain = hasUncertainTermination(error);
+      throw error;
+    } finally {
+      if (!uncertain) await cleanupPreservingError(() => session.cleanup(), failed);
+    }
+  }
+}
