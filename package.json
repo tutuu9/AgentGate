@@ -1,0 +1,47 @@
+{
+  "name": "agentgate",
+  "version": "0.1.0-dev.0",
+  "description": "Local, human-approved GitHub Issue-to-PR workflows",
+  "type": "module",
+  "license": "MIT",
+  "repository": "github:tutuu9/AgentGate",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "bin": {
+    "agentgate": "dist/cli/main.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    ".env.example",
+    "docs"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --test-concurrency=1 test/*.test.ts",
+    "lint": "eslint src test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.0.0",
+    "eslint": "^10.14.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.0.0"
+  }
+}
