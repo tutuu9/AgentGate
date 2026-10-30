@@ -122,7 +122,7 @@ async function runCheck(codexPath: string, home: string, workspace: string, name
     // Match the production check launch: resolve externally, then change cwd inside the sandbox.
     const trampoline = `const {spawn}=require('node:child_process');const [cwd,cmd,...args]=process.argv.slice(1);process.chdir(cwd);const p=spawn(cmd,args,{shell:false,stdio:'inherit',windowsHide:true});p.on('error',()=>process.exit(127));p.on('exit',(code)=>process.exit(code??1));`;
     return await execute({
-      command: codexPath,
+      command: session.codexExecutable ?? codexPath,
       args: [
         ...session.configArgs,
         'sandbox',
@@ -158,7 +158,7 @@ async function verifyVersion(codexPath: string, home: string): Promise<void> {
   let uncertain = false;
   try {
     const result = await execute({
-      command: codexPath,
+      command: session.codexExecutable ?? codexPath,
       args: [...session.configArgs, '--version'],
       cwd: session.launcher,
       env: session.env,
@@ -195,7 +195,7 @@ setTimeout(()=>process.exit(0),30000);`;
   const started = Date.now();
   let uncertain = false;
   const execution = execute({
-    command: codexPath,
+    command: session.codexExecutable ?? codexPath,
     args: [
       ...session.configArgs,
       'sandbox',

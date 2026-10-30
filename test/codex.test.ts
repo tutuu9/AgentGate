@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import test from 'node:test';
 import { buildAgentPrompt, CodexRunner, parseAgentOutput } from '../src/adapters/codex.ts';
-import { ProcessError, type ExecuteOptions } from '../src/adapters/process.ts';
+import { ProcessError, resolveCommand, type ExecuteOptions } from '../src/adapters/process.ts';
 import type { Plan, Run } from '../src/core/contracts.ts';
 
 const plan: Plan = {
@@ -110,7 +110,10 @@ test('Codex runner passes task data through stdin and preserves stage permission
     const canonicalExecutable = await realpath(process.execPath);
     assert.equal(captured.length, 3);
     captured.forEach((options, index) => {
-      assert.equal(options.command, process.execPath);
+      assert.equal(
+        options.command,
+        process.platform === 'linux' ? canonicalExecutable : process.execPath,
+      );
       if (process.platform === 'linux')
         assert.ok(
           options.args.some((argument) =>
@@ -143,6 +146,57 @@ test('Codex runner passes task data through stdin and preserves stage permission
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test(
+  'Linux invokes the trusted policy executable instead of resolving PATH again from the launcher',
+  { skip: process.platform !== 'linux' },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-codex-selection-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const worktree = join(directory, 'checkout');
+    const worktreeBin = join(worktree, 'bin');
+    const trustedBin = join(directory, 'trusted');
+    await mkdir(worktreeBin, { recursive: true });
+    await mkdir(trustedBin);
+    // These executable fixtures are only resolved, never launched or used as model providers.
+    for (const bin of [worktreeBin, trustedBin])
+      await writeFile(join(bin, 'codex'), 'unexecuted fixture', { mode: 0o700 });
+    const trustedExecutable = await realpath(join(trustedBin, 'codex'));
+    const previousPath = process.env.PATH;
+    process.env.PATH = [worktreeBin, trustedBin].join(delimiter);
+    const invoked: string[] = [];
+    try {
+      const runner = new CodexRunner({
+        home: join(directory, 'home'),
+        codexPath: 'codex',
+        sandbox: {
+          doctor: async () => [{ name: 'fake', ok: true, detail: 'Not isolation evidence' }],
+        },
+        executor: async (options) => {
+          const selected = await resolveCommand(
+            options.command,
+            options.args,
+            options.env,
+            options.cwd,
+          );
+          invoked.push(selected.command);
+          assert.ok(
+            options.args.some((argument) =>
+              argument.includes(`${JSON.stringify(trustedExecutable)}="read"`),
+            ),
+          );
+          return { exitCode: 0, stdout: transcript(plan), stderr: '', durationMs: 1 };
+        },
+      });
+
+      assert.deepEqual(await runner.run('plan', { run: fixtureRun(worktree) }), plan);
+      assert.deepEqual(invoked, [trustedExecutable]);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+  },
+);
 
 test('Codex uses the explicitly selected model and reasoning effort for every stage', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'agentgate-model-'));

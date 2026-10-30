@@ -167,7 +167,7 @@ export class CodexRunner implements AgentRunner {
       // A custom permission profile enforces stricter reads than the broad legacy sandbox flag.
       // Do not pass --sandbox alongside it: that would select a different permission policy.
       const result = await this.executor({
-        command: this.codexPath,
+        command: session.codexExecutable ?? this.codexPath,
         args: [
           ...session.configArgs,
           '-a',

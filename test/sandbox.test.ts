@@ -133,6 +133,7 @@ test(
       session = await createSandboxSession(join(directory, 'home'), worktree, true, 'codex');
       const filesystem = session.configArgs.find((argument) => argument.includes('.filesystem='));
       assert.ok(filesystem);
+      assert.equal(session.codexExecutable, await realpath(executable));
       assert.ok(filesystem.includes(`${JSON.stringify(await realpath(executable))}="read"`));
       assert.ok(!filesystem.includes(`${JSON.stringify(tools)}="read"`));
       assert.ok(!filesystem.includes(`${JSON.stringify(join(tools, 'codex'))}="read"`));

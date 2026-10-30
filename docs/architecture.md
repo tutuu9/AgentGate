@@ -60,7 +60,7 @@ Run state has a schema version; unsupported or malformed state is rejected rathe
 
 A lock belongs to a PID and random nonce. It is released after a graceful controller exit. Neither live/reused nor dead PIDs authorize automatic lock reclamation: an abruptly terminated controller may leave a worker or check running. A malformed lock also blocks execution.
 
-If process-tree shutdown cannot be verified, the controller retains the lock even when it can report the failure normally. Doctor and other controller operations use the same lease. This requires the same explicit recovery as a stale lock.
+If process-tree shutdown cannot be verified, the controller retains the lock, sandbox session, and probe fixtures even when it can report the failure normally. Doctor and other controller operations use the same lease. This requires the same explicit recovery as a stale lock. The first Ctrl+C requests cancellation through the shared controller signal, including while the terminal is between prompts.
 
 For crash recovery, first establish that the complete worker/check process tree has stopped, or restart the machine. Confirm no AgentGate instance remains active, back up the state, and explicitly remove only the exact stale `run.lock` file. Preserve every run record and worktree, then resume. The preview does not have an operating-system supervisor that can prove orphan-process termination, so it cannot safely automate this step.
 
@@ -75,6 +75,8 @@ Codex runs with a dedicated profile and a controller-owned launcher outside the 
 The adapter accepts Codex CLI 0.166.0 on Windows and 0.154.0 on Linux, disables external integrations, refuses API-key authentication, and requires live sandbox observations before worker execution. Windows explicitly selects MXC with networking disabled; Linux uses the supported CLI sandbox interface. MXC's offline policy denies host loopback as well as external networking. Managed networking is not enabled. Missing MXC capabilities or restrictive managed configuration make execution unavailable; there is no automatic legacy fallback. A legacy setup marker is not required or accepted as isolation evidence.
 
 Windows Node processes use controller-fixed `NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main`. Node's default script resolution walks ancestor metadata such as `C:\`, which the default-deny policy blocks. The fixed flags support npm and nested Node script loading while retaining the same filesystem grants. They replace untrusted caller options; linked-package module identity differs from default Node behavior and needs project-specific validation.
+
+Linux Codex re-executes its native binary after establishing the restricted filesystem view. The controller resolves that executable, grants read access to its exact canonical file, and invokes the same selected file without searching `PATH` again. Paths or aliases inside the target worktree or AgentGate state are rejected. This does not grant access to its installation directory. Linux also needs working bubblewrap user/network namespaces; the Ubuntu acceptance job uses the distribution's targeted AppArmor profile while preserving the global namespace restriction.
 
 Native isolation and its limitations require real acceptance evidence. Mocked subprocess responses, generated configuration, and prompts alone cannot prove that an operating-system boundary is enforced.
 

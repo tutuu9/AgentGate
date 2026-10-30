@@ -43,6 +43,8 @@ export interface CodexOptions {
 }
 
 export interface SandboxSession {
+  /** Canonical Linux executable selected for this policy and its matching invocation. */
+  codexExecutable?: string;
   launcher: string;
   profile: string;
   env: NodeJS.ProcessEnv;
@@ -194,6 +196,7 @@ export async function createSandboxSession(
   // unlike prefer_mxc, it never selects a legacy fallback. Disabled networking also denies loopback.
   if (process.platform === 'win32') configArgs.push(...config('windows.sandbox', 'mxc'));
   return {
+    codexExecutable: runtimeExecutable,
     launcher,
     profile,
     env,
@@ -358,7 +361,7 @@ export class CodexSandbox implements SandboxRunner {
     const command = async (args: string[]) => {
       signal?.throwIfAborted();
       const result = await this.executor({
-        command: this.codexPath,
+        command: session.codexExecutable ?? this.codexPath,
         args: [...session.configArgs, ...args],
         cwd: session.launcher,
         env: session.env,
@@ -517,7 +520,7 @@ export class CodexSandbox implements SandboxRunner {
         try {
           signal?.throwIfAborted();
           const result = await this.executor({
-            command: this.codexPath,
+            command: session.codexExecutable ?? this.codexPath,
             args: [
               ...session.configArgs,
               'sandbox',
@@ -638,7 +641,7 @@ export class CodexSandbox implements SandboxRunner {
       // The fixed Node trampoline changes cwd without exposing the project to Codex config discovery.
       const trampoline = `const {spawn}=require('node:child_process');const [cwd,cmd,...args]=process.argv.slice(1);process.chdir(cwd);const p=spawn(cmd,args,{shell:false,stdio:'inherit',windowsHide:true});p.on('error',()=>process.exit(127));p.on('exit',(code)=>process.exit(code??1));`;
       const result = await this.executor({
-        command: this.codexPath,
+        command: session.codexExecutable ?? this.codexPath,
         args: [
           ...session.configArgs,
           'sandbox',
