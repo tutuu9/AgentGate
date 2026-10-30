@@ -22,6 +22,8 @@ test('isolated environments exclude credentials, shell options and proxies', () 
     OPENAI_API_KEY: 'fake',
     ANTHROPIC_API_KEY: 'fake',
     NODE_OPTIONS: '--require fake',
+    node_options: '--import fake-lowercase',
+    NoDe_OpTiOnS: '--require fake-mixed-case',
     HTTPS_PROXY: 'https://fake',
     SSH_AUTH_SOCK: '/fake',
     CODEX_NETWORK_ALLOW_LOCAL_BINDING: '1',
@@ -33,13 +35,19 @@ test('isolated environments exclude credentials, shell options and proxies', () 
     'GITHUB_TOKEN',
     'OPENAI_API_KEY',
     'ANTHROPIC_API_KEY',
-    'NODE_OPTIONS',
+    'node_options',
+    'NoDe_OpTiOnS',
     'HTTPS_PROXY',
     'SSH_AUTH_SOCK',
     'CODEX_NETWORK_ALLOW_LOCAL_BINDING',
     'npm_config_registry',
   ])
     assert.equal(env[key], undefined);
+  assert.equal(
+    env.NODE_OPTIONS,
+    process.platform === 'win32' ? '--preserve-symlinks --preserve-symlinks-main' : undefined,
+  );
+  assert.ok(!Object.values(env).some((value) => value?.includes('--require fake')));
 });
 
 test('Windows sandbox identity comes from the OS rather than caller environment', () => {

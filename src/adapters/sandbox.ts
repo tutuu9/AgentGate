@@ -106,6 +106,9 @@ export function isolatedEnvironment(
     if (!systemDrive || !/^[a-zA-Z]:$/.test(systemDrive))
       throw new Error('Windows host SystemDrive must name a drive letter.');
     env.SystemDrive = systemDrive;
+    // Node's default module realpath walks denied ancestors. Keep lexical module paths
+    // without granting ancestor reads; never concatenate caller-supplied Node options.
+    env.NODE_OPTIONS = '--preserve-symlinks --preserve-symlinks-main';
   }
   env.TEMP = temporary;
   env.TMP = temporary;
