@@ -159,6 +159,15 @@ const net = require('node:net');
 const {spawnSync} = require('node:child_process');
 const p = JSON.parse(process.argv[1]);
 function attempt(fn) { try { fn(); return true; } catch { return false; } }
+function read(path) { try { return fs.readFileSync(path,'utf8'); } catch { return null; } }
+async function handshake(ready, proceed) {
+  fs.writeFileSync(ready,p.nonce,{flag:'wx'});
+  const deadline=Date.now()+15000;
+  while(read(proceed)!==p.nonce) {
+    if(Date.now()>deadline)throw new Error('Handshake timed out');
+    await new Promise(resolve=>setTimeout(resolve,25));
+  }
+}
 function connect(host, port) { return new Promise(resolve => {
   const s = net.createConnection({host, port});
   const done = value => {s.destroy(); resolve(value)};
@@ -166,26 +175,27 @@ function connect(host, port) { return new Promise(resolve => {
 }); }
 (async () => {
   const initiallyAbsent = !fs.existsSync(p.reads.postStart);
-  if (!p.child) {
-    fs.writeFileSync(p.ready, p.nonce, {flag: 'wx'});
-    const deadline = Date.now() + 15000;
-    while (!attempt(() => {if (fs.readFileSync(p.proceed, 'utf8') !== p.nonce) throw new Error()})) {
-      if (Date.now() > deadline) throw new Error('Handshake timed out');
-      await new Promise(resolve => setTimeout(resolve, 25));
-    }
-  }
+  if (!p.child) await handshake(p.ready,p.proceed);
   const observations = {
     reads: Object.fromEntries(Object.entries(p.reads).map(([name,path]) => [name,attempt(() => fs.readFileSync(path))])),
     writes: Object.fromEntries(Object.entries(p.writes).map(([name,path]) => [name,attempt(() => fs.writeFileSync(path,'fake fixture data'))])),
+    canaries: Object.fromEntries(Object.entries(p.canaries).map(([name,path]) => {
+      const readBefore=read(path);
+      const write=attempt(()=>fs.writeFileSync(path,'worker-'+p.nonce));
+      return [name,{readBefore,write,readAfter:read(path)}];
+    })),
     gitRemovable: attempt(() => fs.unlinkSync(p.writes.git)),
     loopback4: await connect('127.0.0.1', p.port4), loopback6: await connect('::1', p.port6),
     credentials: p.credentials.some(name => Boolean(process.env[name]))
   };
+  const stage=p.child?p.childHandshake:p.directHandshake;
+  fs.writeFileSync(stage.report,JSON.stringify(observations),{flag:'wx'});
+  await handshake(stage.ready,stage.proceed);
   // This nested Node spawn creates socketpairs inside seccomp; report on the descriptor
   // directly because Node's console socket classification needs denied network syscalls.
   if (p.child) return fs.writeSync(1, JSON.stringify(observations) + '\n');
   const child = spawnSync(process.execPath, ['-e', process.argv[2], JSON.stringify({...p,child:true}), process.argv[2]], {
-    shell: false, windowsHide: true, encoding: 'utf8', timeout: 6000, maxBuffer: 8192
+    shell: false, windowsHide: true, encoding: 'utf8', timeout: 15000, maxBuffer: 8192
   });
   if (child.status !== 0 || child.error) throw new Error('Child probe did not complete');
   console.log(JSON.stringify({initiallyAbsent,observations,child:JSON.parse(child.stdout.trim())}));
@@ -195,6 +205,16 @@ const Observation = z
   .object({
     reads: z.record(z.string(), z.boolean()),
     writes: z.record(z.string(), z.boolean()),
+    canaries: z.record(
+      z.string(),
+      z
+        .object({
+          readBefore: z.string().nullable(),
+          write: z.boolean(),
+          readAfter: z.string().nullable(),
+        })
+        .strict(),
+    ),
     gitRemovable: z.boolean(),
     loopback4: z.boolean(),
     loopback6: z.boolean(),
@@ -254,22 +274,86 @@ async function runStage(
       outside: join(outside, 'sentinel.txt'),
       postStart: join(outside, `${nonce}-post-start.txt`),
     };
+    const outsideWrites = {
+      outsideHomeFixture: join(root, `${nonce}-write.txt`),
+      outside: join(outside, `${nonce}-write.txt`),
+    };
+    const canaries = {
+      outsideHomeFixture: join(root, `${nonce}-canary.txt`),
+      outside: join(outside, `${nonce}-canary.txt`),
+    };
+    const originalCanaries = await Promise.all(
+      Object.entries(canaries).map(async ([name, path]) => {
+        const content = `FAKE-OUTSIDE-${randomUUID()}`;
+        await writeFile(path, content, { flag: 'wx' });
+        return { name, path, content, identity: await lstat(path, { bigint: true }) };
+      }),
+    );
     const writes = {
       ...Object.fromEntries(
         Object.entries(files).map(([key, value]) => [key, join(workspace, value)]),
       ),
       newFile: join(workspace, 'new.txt'),
-      outside: join(outside, `${nonce}-write.txt`),
+      ...outsideWrites,
     };
+    const handshakePaths = (name: string) => ({
+      report: join(session.env.TEMP!, `${name}-report.json`),
+      ready: join(session.env.TEMP!, `${name}-ready.txt`),
+      proceed: join(session.env.TEMP!, `${name}-continue.txt`),
+    });
     const data = {
       nonce,
       reads,
       writes,
+      canaries,
       ready: join(session.env.TEMP!, 'ready.txt'),
       proceed: join(session.env.TEMP!, 'continue.txt'),
+      directHandshake: handshakePaths('direct'),
+      childHandshake: handshakePaths('child'),
       port4: ports[0],
       port6: ports[1],
       credentials,
+    };
+    const absent = async (path: string) => {
+      try {
+        await lstat(path);
+        return false;
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return true;
+        throw error;
+      }
+    };
+    const hostSnapshot = async () => {
+      const newOutsideFilesAbsent = Object.fromEntries(
+        await Promise.all(
+          Object.entries(outsideWrites).map(async ([name, path]) => [name, await absent(path)]),
+        ),
+      );
+      const hostCanaries = Object.fromEntries(
+        await Promise.all(
+          originalCanaries.map(async (original) => {
+            let bytesUnchanged = false;
+            let identityUnchanged = false;
+            try {
+              const identity = await lstat(original.path, { bigint: true });
+              bytesUnchanged = (await readFile(original.path, 'utf8')) === original.content;
+              identityUnchanged =
+                identity.dev === original.identity.dev && identity.ino === original.identity.ino;
+            } catch (error) {
+              if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT')
+                throw error;
+            }
+            return [original.name, { bytesUnchanged, identityUnchanged }];
+          }),
+        ),
+      );
+      const workspaceExistingMatches =
+        (await readFile(join(workspace, files.existing), 'utf8')) ===
+        (writable ? 'fake fixture data' : 'fake fixture only');
+      const workspaceNewMatches = writable
+        ? (await readFile(writes.newFile, 'utf8')) === 'fake fixture data'
+        : await absent(writes.newFile);
+      return { newOutsideFilesAbsent, hostCanaries, workspaceExistingMatches, workspaceNewMatches };
     };
     const source = {
       ...process.env,
@@ -311,12 +395,29 @@ async function runStage(
         stopped = true;
       });
     let handshakeError: unknown;
+    const during: Array<{
+      stage: 'direct' | 'child';
+      host: Awaited<ReturnType<typeof hostSnapshot>>;
+      observation: z.infer<typeof Observation>;
+    }> = [];
     try {
       await waitReady(data.ready, nonce, () => stopped, signal);
       if (!inside(outside, reads.postStart))
         throw new Error('Post-start file escaped its owned fixture.');
       await writeFile(reads.postStart, 'fake post-start fixture only', { flag: 'wx' });
       await writeFile(data.proceed, nonce, { flag: 'wx' });
+      for (const [stage, handshake] of [
+        ['direct', data.directHandshake],
+        ['child', data.childHandshake],
+      ] as const) {
+        await waitReady(handshake.ready, nonce, () => stopped, signal);
+        const observation = Observation.parse(JSON.parse(await readFile(handshake.report, 'utf8')));
+        if (stopped) throw new Error('Sandbox stopped before live host verification.');
+        const host = await hostSnapshot();
+        if (stopped) throw new Error('Sandbox stopped during live host verification.');
+        during.push({ stage, host, observation });
+        await writeFile(handshake.proceed, nonce, { flag: 'wx' });
+      }
     } catch (error) {
       handshakeError = error;
       stageAbort.abort(error);
@@ -333,10 +434,35 @@ async function runStage(
       throw new Error('Invalid fixture JSON; raw output discarded.');
     }
     const result = Result.parse(value);
+    const after = await hostSnapshot();
+    const hostConforms = (host: Awaited<ReturnType<typeof hostSnapshot>>) =>
+      Object.keys(outsideWrites).every((name) => host.newOutsideFilesAbsent[name] === true) &&
+      Object.keys(canaries).every(
+        (name) =>
+          host.hostCanaries[name]?.bytesUnchanged === true &&
+          host.hostCanaries[name]?.identityUnchanged === true,
+      ) &&
+      host.workspaceExistingMatches &&
+      host.workspaceNewMatches;
+    const hostIsolationVerified =
+      during.length === 2 &&
+      during.every((entry) => hostConforms(entry.host)) &&
+      hostConforms(after);
+    const reportsMatch =
+      JSON.stringify(during[0]?.observation) === JSON.stringify(result.observations) &&
+      JSON.stringify(during[1]?.observation) === JSON.stringify(result.child);
     const conforms = (observed: z.infer<typeof Observation>) =>
       Object.keys(reads).every((key) => observed.reads[key] === (key === 'workspace')) &&
-      Object.keys(writes).every(
-        (key) => observed.writes[key] === (writable && ['existing', 'newFile'].includes(key)),
+      Object.keys(writes).every((key) =>
+        key in outsideWrites
+          ? typeof observed.writes[key] === 'boolean' && hostIsolationVerified
+          : observed.writes[key] === (writable && ['existing', 'newFile'].includes(key)),
+      ) &&
+      originalCanaries.every(
+        (original) =>
+          observed.canaries[original.name] !== undefined &&
+          observed.canaries[original.name]!.readBefore !== original.content &&
+          observed.canaries[original.name]!.readAfter !== original.content,
       ) &&
       !observed.gitRemovable &&
       !observed.loopback4 &&
@@ -347,9 +473,14 @@ async function runStage(
       passed:
         result.initiallyAbsent &&
         strippedInController &&
+        reportsMatch &&
+        hostIsolationVerified &&
         conforms(result.observations) &&
         conforms(result.child),
       strippedInController,
+      hostIsolationVerified,
+      hostDuring: during.map(({ stage, host }) => ({ stage, ...host })),
+      hostAfter: after,
       ...result,
     };
   });

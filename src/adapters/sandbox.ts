@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createConnection, createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { hasUncertainTermination } from '../core/errors.ts';
 import {
@@ -318,25 +319,66 @@ const ProbeSchema = z.object({
   readWorkspace: z.boolean(),
   writeWorkspace: z.boolean(),
   readSentinel: z.boolean(),
+  writeSentinel: z.boolean(),
   writeOutside: z.boolean(),
   loopback: z.boolean(),
   egress: z.boolean(),
   credentials: z.boolean(),
 });
 
-function probeScript(paths: {
+interface ProbePaths {
   allowed: string;
   sentinel: string;
   outside: string;
   write: string;
   port: number;
-}): string {
+  nonce: string;
+  ready: string;
+  proceed: string;
+}
+
+interface ProbeCanary {
+  content: string;
+  dev: bigint;
+  ino: bigint;
+}
+
+async function absent(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return false;
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return true;
+    throw error;
+  }
+}
+
+async function probeHostUnchanged(
+  paths: ProbePaths,
+  canary: ProbeCanary,
+  writable: boolean,
+): Promise<boolean> {
+  if (!(await absent(paths.outside))) return false;
+  const identity = await lstat(paths.sentinel, { bigint: true });
+  if (
+    identity.dev !== canary.dev ||
+    identity.ino !== canary.ino ||
+    (await readFile(paths.sentinel, 'utf8')) !== canary.content
+  )
+    return false;
+  return writable ? (await readFile(paths.write, 'utf8')) === paths.nonce : absent(paths.write);
+}
+
+function probeScript(paths: ProbePaths): string {
   // Only controller-generated fixture paths enter this fixed script, never issue/model input.
   return `const fs=require('node:fs');const net=require('node:net');
 const p=${JSON.stringify(paths)};
 function attempt(fn){try{fn();return true}catch{return false}}
 function connect(host,port){return new Promise(resolve=>{const s=net.createConnection({host,port});const done=v=>{s.destroy();resolve(v)};s.setTimeout(2500,()=>done(false));s.once('connect',()=>done(true));s.once('error',()=>done(false))})}
-(async()=>{const result={readWorkspace:attempt(()=>fs.readFileSync(p.allowed)),writeWorkspace:attempt(()=>fs.writeFileSync(p.write,'fixture')),readSentinel:attempt(()=>fs.readFileSync(p.sentinel)),writeOutside:attempt(()=>fs.writeFileSync(p.outside,'fixture')),loopback:await connect('127.0.0.1',p.port),egress:await connect('1.1.1.1',443),credentials:['GH_TOKEN','GITHUB_TOKEN','OPENAI_API_KEY','CODEX_API_KEY','ANTHROPIC_API_KEY','SSH_AUTH_SOCK'].some(k=>Boolean(process.env[k]))};console.log(JSON.stringify(result))})().catch(()=>process.exit(2));`;
+(async()=>{const result={readWorkspace:attempt(()=>fs.readFileSync(p.allowed)),writeWorkspace:attempt(()=>fs.writeFileSync(p.write,p.nonce,{flag:'wx'})),readSentinel:attempt(()=>fs.readFileSync(p.sentinel)),writeSentinel:attempt(()=>fs.writeFileSync(p.sentinel,p.nonce)),writeOutside:attempt(()=>fs.writeFileSync(p.outside,p.nonce,{flag:'wx'})),loopback:await connect('127.0.0.1',p.port),egress:await connect('1.1.1.1',443),credentials:['GH_TOKEN','GITHUB_TOKEN','OPENAI_API_KEY','CODEX_API_KEY','ANTHROPIC_API_KEY','SSH_AUTH_SOCK'].some(k=>Boolean(process.env[k]))};
+fs.writeFileSync(p.ready+'.tmp',JSON.stringify({nonce:p.nonce,observation:result}),{flag:'wx'});fs.renameSync(p.ready+'.tmp',p.ready);
+const deadline=Date.now()+10000;while(!attempt(()=>{if(fs.readFileSync(p.proceed,'utf8')!==p.nonce)throw new Error()})){if(Date.now()>deadline)throw new Error();await new Promise(resolve=>setTimeout(resolve,25))}
+console.log(JSON.stringify(result))})().catch(()=>process.exit(2));`;
 }
 
 export class CodexSandbox implements SandboxRunner {
@@ -490,6 +532,92 @@ export class CodexSandbox implements SandboxRunner {
     }
   }
 
+  private async runIsolationProbe(
+    session: SandboxSession,
+    paths: ProbePaths,
+    canary: ProbeCanary,
+    writable: boolean,
+    signal?: AbortSignal,
+  ): Promise<{ result: ExecuteResult; hostVerified: boolean }> {
+    const cancellation = new AbortController();
+    const workerSignal = AbortSignal.any([cancellation.signal, ...(signal ? [signal] : [])]);
+    let stopped = false;
+    const execution = this.executor({
+      command: session.codexExecutable ?? this.codexPath,
+      linuxPipeTransport: true,
+      args: [
+        ...session.configArgs,
+        'sandbox',
+        '--include-managed-config',
+        '-P',
+        session.profile,
+        '-C',
+        session.launcher,
+        '--',
+        process.execPath,
+        '-e',
+        probeScript(paths),
+      ],
+      cwd: session.launcher,
+      env: session.env,
+      timeoutMs: 20_000,
+      maxOutputBytes: 128 * 1024,
+      signal: workerSignal,
+    })
+      .then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error }),
+      )
+      .finally(() => {
+        stopped = true;
+      });
+    const stop = async () => {
+      cancellation.abort();
+      const outcome = await execution;
+      // Unverified shutdown takes precedence over a malformed report or host-read error.
+      if ('error' in outcome && hasUncertainTermination(outcome.error)) throw outcome.error;
+    };
+    try {
+      const deadline = Date.now() + 20_000;
+      let report: z.infer<typeof ProbeSchema> | undefined;
+      while (!report) {
+        workerSignal.throwIfAborted();
+        if (stopped) {
+          const outcome = await execution;
+          if ('error' in outcome) throw outcome.error;
+          return { result: outcome.result, hostVerified: false };
+        }
+        try {
+          if ((await lstat(paths.ready)).size > 128 * 1024)
+            throw new Error('Sandbox probe report exceeded its limit.');
+          const ready = z
+            .object({ nonce: z.literal(paths.nonce), observation: ProbeSchema })
+            .parse(JSON.parse(await readFile(paths.ready, 'utf8')));
+          report = ready.observation;
+        } catch (error) {
+          if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT')
+            throw error;
+        }
+        if (Date.now() > deadline) throw new Error('Sandbox probe did not complete its handshake.');
+        if (!report) await delay(25, undefined, { signal: workerSignal });
+      }
+      if (stopped) throw new Error('Sandbox probe exited before live host verification.');
+      const during = await probeHostUnchanged(paths, canary, writable);
+      if (stopped) throw new Error('Sandbox probe exited during live host verification.');
+      await writeFile(paths.proceed, paths.nonce, { flag: 'wx' });
+      const outcome = await execution;
+      if ('error' in outcome) throw outcome.error;
+      if (outcome.result.exitCode !== 0) return { result: outcome.result, hostVerified: false };
+      const final = ProbeSchema.parse(JSON.parse(outcome.result.stdout.trim()));
+      if (JSON.stringify(final) !== JSON.stringify(report))
+        throw new Error('Sandbox probe changed its observations after host verification.');
+      const after = await probeHostUnchanged(paths, canary, writable);
+      return { result: outcome.result, hostVerified: during && after };
+    } finally {
+      await stop();
+    }
+  }
+
   private async probeIsolation(signal?: AbortSignal): Promise<DoctorCheck[]> {
     signal?.throwIfAborted();
     const fixture = await mkdtemp(join(this.home, 'runtime', 'probe-'));
@@ -498,7 +626,10 @@ export class CodexSandbox implements SandboxRunner {
     const allowed = join(workspace, 'allowed.txt');
     const sentinel = join(fixture, 'fake-secret.txt');
     await writeFile(allowed, 'AgentGate sandbox fixture');
-    await writeFile(sentinel, `FAKE-SECRET-${randomUUID()}`, { mode: 0o600 });
+    const content = `FAKE-SECRET-${randomUUID()}`;
+    await writeFile(sentinel, content, { mode: 0o600 });
+    const identity = await lstat(sentinel, { bigint: true });
+    const canary = { content, dev: identity.dev, ino: identity.ino };
     const server = createServer((socket) => socket.end());
     const checks: DoctorCheck[] = [];
     let failed = false;
@@ -519,34 +650,22 @@ export class CodexSandbox implements SandboxRunner {
         let invocationUncertain = false;
         try {
           signal?.throwIfAborted();
-          const result = await this.executor({
-            command: session.codexExecutable ?? this.codexPath,
-            linuxPipeTransport: true,
-            args: [
-              ...session.configArgs,
-              'sandbox',
-              '--include-managed-config',
-              '-P',
-              session.profile,
-              '-C',
-              session.launcher,
-              '--',
-              process.execPath,
-              '-e',
-              probeScript({
-                allowed,
-                sentinel,
-                outside: join(fixture, 'forbidden-write.txt'),
-                write: join(workspace, writable ? 'write-mode.txt' : 'readonly-mode.txt'),
-                port: address.port,
-              }),
-            ],
-            cwd: session.launcher,
-            env: session.env,
-            timeoutMs: 20_000,
-            maxOutputBytes: 128 * 1024,
+          const { result, hostVerified } = await this.runIsolationProbe(
+            session,
+            {
+              allowed,
+              sentinel,
+              outside: join(fixture, `forbidden-${writable}.txt`),
+              write: join(workspace, writable ? 'write-mode.txt' : 'readonly-mode.txt'),
+              port: address.port,
+              nonce: randomUUID(),
+              ready: join(session.env.TMPDIR!, 'probe-ready.json'),
+              proceed: join(session.env.TMPDIR!, 'probe-proceed.txt'),
+            },
+            canary,
+            writable,
             signal,
-          });
+          );
           signal?.throwIfAborted();
           if (result.exitCode !== 0) {
             checks.push({
@@ -570,14 +689,14 @@ export class CodexSandbox implements SandboxRunner {
             p.readWorkspace &&
             p.writeWorkspace === writable &&
             !p.readSentinel &&
-            !p.writeOutside &&
+            hostVerified &&
             !p.credentials;
           checks.push({
             name: writable ? 'sandbox-write' : 'sandbox-read',
             ok: filesystemOk,
             detail: filesystemOk
-              ? 'Live fixture verified workspace permissions, denied fake-secret read, denied outside write, and absent credential environment.'
-              : `Live fixture failed a filesystem or environment boundary; execution is blocked. Observed readWorkspace=${p.readWorkspace}, writeWorkspace=${p.writeWorkspace} (expected ${writable}), readSentinel=${p.readSentinel}, writeOutside=${p.writeOutside}, credentials=${p.credentials}.`,
+              ? `Live fixture verified workspace permissions, denied fake-secret read, unchanged outside host files while running and after exit, and absent credentials. Private namespace writes observed=${p.writeOutside || p.writeSentinel}.`
+              : `Live fixture failed a filesystem or environment boundary; execution is blocked. Observed readWorkspace=${p.readWorkspace}, writeWorkspace=${p.writeWorkspace} (expected ${writable}), readSentinel=${p.readSentinel}, writeOutside=${p.writeOutside}, hostVerified=${hostVerified}, credentials=${p.credentials}.`,
           });
           checks.push({
             name: writable ? 'sandbox-write-network' : 'sandbox-read-network',

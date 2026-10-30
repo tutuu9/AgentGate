@@ -4,14 +4,17 @@ import {
   access,
   mkdir,
   mkdtemp,
+  readFile,
   readdir,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir, userInfo } from 'node:os';
 import { delimiter, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import {
   CODEX_VERSION,
@@ -330,6 +333,50 @@ function prerequisiteExecutor(
   };
 }
 
+interface SyntheticProbePaths {
+  write: string;
+  outside: string;
+  sentinel: string;
+  nonce: string;
+  ready: string;
+  proceed: string;
+}
+
+async function syntheticProbe(
+  options: ExecuteOptions,
+  observation: Record<string, unknown>,
+  effects: {
+    beforeReady?: (paths: SyntheticProbePaths) => Promise<void>;
+    afterProceed?: (paths: SyntheticProbePaths) => Promise<void>;
+    missingWorkspaceWrite?: boolean;
+  } = {},
+) {
+  const script = options.args[options.args.indexOf('-e') + 1]!;
+  const encoded = /\nconst p=(.+);\n/.exec(script);
+  assert.ok(encoded, 'The fixed probe supplies fixture paths as JSON.');
+  const paths = JSON.parse(encoded[1]!) as SyntheticProbePaths;
+  if (observation.writeWorkspace && !effects.missingWorkspaceWrite)
+    await writeFile(paths.write, paths.nonce, { flag: 'wx' });
+  await effects.beforeReady?.(paths);
+  await writeFile(`${paths.ready}.tmp`, JSON.stringify({ nonce: paths.nonce, observation }), {
+    flag: 'wx',
+  });
+  await rename(`${paths.ready}.tmp`, paths.ready);
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    options.signal?.throwIfAborted();
+    try {
+      if ((await readFile(paths.proceed, 'utf8')) === paths.nonce) break;
+    } catch (error) {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+    }
+    if (Date.now() > deadline) throw new Error('Synthetic controller handshake did not finish.');
+    await delay(10, undefined, { signal: options.signal });
+  }
+  await effects.afterProceed?.(paths);
+  return { exitCode: 0, stdout: JSON.stringify(observation), stderr: '', durationMs: 1 };
+}
+
 test('Codex prerequisites reject unsupported versions, integrations and API billing', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'agentgate-doctor-'));
   const session = await createSandboxSession(directory);
@@ -611,21 +658,17 @@ test('synthetic probe observations fail closed on missing network evidence or fo
         return prerequisites(options);
       probeCalls++;
       const writable = options.args.some((argument) => /workspace"="write"/.test(argument));
-      return {
-        exitCode: 0,
-        stdout: JSON.stringify({
-          readWorkspace: true,
-          writeWorkspace: writable,
-          readSentinel: exposeSentinel,
-          writeOutside: false,
-          loopback: exposeLoopback,
-          egress: false,
-          credentials: false,
-          unexpectedPrivateText: 'FAKE_PRIVATE_TEXT_MUST_NOT_REACH_DIAGNOSTICS',
-        }),
-        stderr: '',
-        durationMs: 1,
-      };
+      return syntheticProbe(options, {
+        readWorkspace: true,
+        writeWorkspace: writable,
+        readSentinel: exposeSentinel,
+        writeSentinel: false,
+        writeOutside: false,
+        loopback: exposeLoopback,
+        egress: false,
+        credentials: false,
+        unexpectedPrivateText: 'FAKE_PRIVATE_TEXT_MUST_NOT_REACH_DIAGNOSTICS',
+      });
     },
   });
   try {
@@ -659,4 +702,123 @@ test('synthetic probe observations fail closed on missing network evidence or fo
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('doctor verifies host effects before accepting synthetic private namespace writes', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-probe-host-effects-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const cases = [
+    'private-shadow-only',
+    'outside-during',
+    'outside-after',
+    'canary-content',
+    'canary-identity',
+    'missing-workspace-write',
+    'missing-handshake',
+    'changed-final-report',
+  ] as const;
+  for (const scenario of cases) {
+    const prerequisites = prerequisiteExecutor();
+    const sandbox = new CodexSandbox({
+      codexPath: process.execPath,
+      home: join(directory, scenario),
+      connectivity: async () => true,
+      executor: async (options) => {
+        if (!options.args.includes('sandbox') || options.args.includes('--help'))
+          return prerequisites(options);
+        const writable = options.args.some((argument) => /workspace"="write"/.test(argument));
+        const observation = {
+          readWorkspace: true,
+          writeWorkspace: writable,
+          readSentinel: false,
+          writeSentinel: true,
+          writeOutside: true,
+          loopback: false,
+          egress: false,
+          credentials: false,
+        };
+        if (scenario === 'missing-handshake')
+          return { exitCode: 0, stdout: JSON.stringify(observation), stderr: '', durationMs: 1 };
+        const result = await syntheticProbe(options, observation, {
+          missingWorkspaceWrite: scenario === 'missing-workspace-write',
+          beforeReady: async (paths) => {
+            if (scenario === 'outside-during') await writeFile(paths.outside, paths.nonce);
+            if (scenario === 'canary-content') await writeFile(paths.sentinel, 'changed');
+            if (scenario === 'canary-identity') {
+              const original = await readFile(paths.sentinel, 'utf8');
+              // Keep the old inode allocated, so replacement cannot accidentally reuse it.
+              await rename(paths.sentinel, `${paths.sentinel}-${paths.nonce}`);
+              await writeFile(paths.sentinel, original);
+            }
+          },
+          afterProceed: async (paths) => {
+            if (scenario === 'outside-after') await writeFile(paths.outside, paths.nonce);
+          },
+        });
+        if (scenario === 'changed-final-report')
+          result.stdout = JSON.stringify({ ...observation, writeOutside: false });
+        return result;
+      },
+    });
+
+    const checks = await sandbox.doctor();
+    const boundaries = checks.filter((check) =>
+      /^(?:sandbox-read|sandbox-write)$/.test(check.name),
+    );
+    if (scenario === 'private-shadow-only') {
+      assert.equal(boundaries.length, 2);
+      assert.ok(
+        boundaries.every((check) => check.ok),
+        'Synthetic decisions are not native evidence.',
+      );
+      assert.ok(
+        boundaries.every((check) =>
+          check.detail.includes('Private namespace writes observed=true'),
+        ),
+      );
+    } else {
+      assert.ok(
+        boundaries.some((check) => !check.ok),
+        `${scenario} must block execution.`,
+      );
+    }
+    assert.deepEqual(await readdir(join(directory, scenario, 'runtime')), []);
+  }
+});
+
+test('doctor preserves a live probe when malformed reporting is followed by uncertain shutdown', async (t) => {
+  const home = await mkdtemp(join(tmpdir(), 'agentgate-probe-uncertain-report-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const prerequisites = prerequisiteExecutor();
+  const failure = new Error('Fake wrapped shutdown failure', {
+    cause: new AggregateError([new ProcessError('termination', 'Fake unknown child state.')]),
+  });
+  let launcher: string | undefined;
+  const sandbox = new CodexSandbox({
+    codexPath: process.execPath,
+    home,
+    connectivity: async () => true,
+    executor: async (options) => {
+      if (!options.args.includes('sandbox') || options.args.includes('--help'))
+        return prerequisites(options);
+      launcher = options.cwd;
+      const script = options.args[options.args.indexOf('-e') + 1]!;
+      const paths = JSON.parse(/\nconst p=(.+);\n/.exec(script)![1]!) as SyntheticProbePaths;
+      await writeFile(paths.ready, '{}', { flag: 'wx' });
+      return new Promise((_, reject) => {
+        const cancelled = () => reject(failure);
+        options.signal!.addEventListener('abort', cancelled, { once: true });
+        if (options.signal!.aborted) cancelled();
+      });
+    },
+  });
+
+  await assert.rejects(sandbox.doctor(), (error) => error === failure);
+  assert.ok(launcher);
+  await access(launcher);
+  const fixtures = (await readdir(join(home, 'runtime'))).filter((name) =>
+    name.startsWith('probe-'),
+  );
+  assert.equal(fixtures.length, 1);
+  await access(join(home, 'runtime', fixtures[0]!, 'fake-secret.txt'));
 });
