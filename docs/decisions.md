@@ -26,6 +26,8 @@ These decisions describe the implementation preview and the agreed first-user wo
 
 **Consequences:** Windows is pinned to Codex CLI 0.166.0 and explicitly selects offline MXC; Linux retains 0.154.0. The initial Windows 0.154.0 elevated attempt failed read and loopback isolation. Enumerating existing directories or weakening the probes cannot replace a default-deny boundary, so legacy Windows backends are not used. Compatibility must be revalidated before expanding the version set. The preview requires explicit authentication in a dedicated profile and has no full-access or paid-API fallback. Docker is not a mandatory dependency. Real isolation acceptance remains a release gate.
 
+**Current limitation:** Linux is diagnostic-only and its workflow gate remains closed. Native cancellation and captured Node streams require fixes in #6 and #7. The maintainer paused automatic Native Linux CI while retaining these blockers and the ordinary code-quality checks.
+
 ## ADR 004: Two human approvals and one repair attempt
 
 **Decision:** Require plan/check approval before implementation and exact-commit approval before push/PR creation. Allow one repair attempt after a check failure or blocking review, within the approved scope. Review is a separate read-only Codex invocation.

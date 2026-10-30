@@ -27,7 +27,7 @@ If draft PRs are unavailable, AgentGate asks again before creating an ordinary P
 - Native Windows with Microsoft Execution Containers (MXC). Windows selects MXC explicitly and blocks execution if the device or managed policy cannot support it; there is no legacy fallback. See [MXC compatibility](https://learn.chatgpt.com/docs/windows/windows-sandbox#mxc-compatibility).
 - Dependencies and check tools that can run offline. The preview targets Node.js/TypeScript repositories and one active run per AgentGate state directory.
 
-Linux needs distribution-provided `bubblewrap` and permission to create its sandbox namespaces. On Ubuntu 24.04, a missing distro `bwrap-userns-restrict` AppArmor profile can prevent startup; follow the [official Linux sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing#prerequisites). The native acceptance job checks namespace creation first and loads the packaged profile only when needed. It preserves the system-wide AppArmor setting and runs Codex as the ordinary runner user. An unavailable profile or failed native probe blocks acceptance.
+Linux diagnostics need distribution-provided `bubblewrap` and permission to create sandbox namespaces. On Ubuntu 24.04, a missing distro `bwrap-userns-restrict` AppArmor profile can prevent startup; see the [official Linux sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing#prerequisites). Recorded native attempts used the packaged profile, preserved the system-wide AppArmor setting, and ran Codex as the ordinary runner user. These prerequisites alone do not enable Linux workflows.
 
 Linux diagnostics also require `/bin/bash` and `/usr/bin/cat` for their fixed pipe transport. Real filesystem/network isolation passed, but a native descendant continued running after cancellation. Captured stdin/stdout/stderr of nested Node processes also reported `EPERM`, missing input, and discarded console output. The production doctor therefore reports `linux-workflow-support: false` and prevents model stages and project checks from starting. Passing physical probes or ordinary Ubuntu tests does not override this gate. Native Linux aborts, timeouts, and output-limit failures retain state because descendant termination is unverified.
 
@@ -153,5 +153,7 @@ The globally installed `clean-code` skill is a contributor convenience, not a ru
 ## Development
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md), [architecture](docs/architecture.md), [decisions](docs/decisions.md), and the [roadmap](docs/roadmap.md). Tests use fake providers and disposable repositories; they must not use real model credentials or paid APIs. CI is configured for Windows and Ubuntu with Node.js 24.
+
+The separate Native Linux CI workflow is paused at the maintainer's request. Its unresolved cancellation and Node compatibility problems are tracked in [#6](https://github.com/tutuu9/AgentGate/issues/6) and [#7](https://github.com/tutuu9/AgentGate/issues/7). Manual reproductions and historical results remain available; Linux execution stays blocked.
 
 Licensed under [MIT](LICENSE).
