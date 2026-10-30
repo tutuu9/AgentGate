@@ -12,6 +12,7 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 - Persistent run checkpoints, inspection/resume commands, exclusive run locking, and explicit cleanup of completed published runs.
 - GitHub CLI integration for controlled branch push and draft PR creation, with separately confirmed ordinary-PR fallback.
 - A Codex CLI 0.154.0 adapter and fail-closed sandbox preflight, with real-environment acceptance still outstanding.
+- Explicit model and reasoning-effort options for planning, implementation, and review during `run` and `resume`.
 - Behavior tests using fake providers and temporary repositories, plus Windows/Ubuntu CI configuration.
 
 ### Status

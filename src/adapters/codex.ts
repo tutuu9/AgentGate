@@ -17,7 +17,16 @@ import {
   type CodexOptions,
 } from './sandbox.ts';
 
-interface RunnerOptions extends CodexOptions {
+export const CodexModelOptionsSchema = z.object({
+  model: z
+    .string()
+    .max(128)
+    .regex(/^[a-z0-9][a-z0-9._-]*$/, 'Model must be a lowercase model identifier.')
+    .optional(),
+  reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+});
+
+interface RunnerOptions extends CodexOptions, z.infer<typeof CodexModelOptionsSchema> {
   /** Tests may supply a fake doctor; this is never evidence of real isolation. */
   sandbox?: Pick<SandboxRunner, 'doctor'>;
 }
@@ -105,12 +114,20 @@ export class CodexRunner implements AgentRunner {
   private readonly codexPath: string;
   private readonly executor: Executor;
   private readonly sandbox: Pick<SandboxRunner, 'doctor'>;
+  private readonly modelArgs: string[];
 
   constructor(options: RunnerOptions) {
+    const { model, reasoningEffort } = CodexModelOptionsSchema.parse(options);
     this.home = resolve(options.home);
     this.codexPath = options.codexPath ?? 'codex';
     this.executor = options.executor ?? execute;
     this.sandbox = options.sandbox ?? new CodexSandbox(options);
+    this.modelArgs = [
+      ...(model ? ['--model', model] : []),
+      ...(reasoningEffort
+        ? ['-c', `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`]
+        : []),
+    ];
   }
 
   async run<S extends AgentStage>(
@@ -153,6 +170,7 @@ export class CodexRunner implements AgentRunner {
           '-a',
           'never',
           'exec',
+          ...this.modelArgs,
           '--ignore-user-config',
           '--ignore-rules',
           '--strict-config',

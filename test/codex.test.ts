@@ -108,6 +108,8 @@ test('Codex runner passes task data through stdin and preserves stage permission
     const canonicalCodexHome = await realpath(join(directory, 'home', 'codex'));
     assert.equal(captured.length, 3);
     captured.forEach((options, index) => {
+      assert.ok(!options.args.includes('--model'));
+      assert.ok(!options.args.some((argument) => argument.startsWith('model_reasoning_effort=')));
       assert.ok(options.args.includes('--ignore-user-config'));
       assert.ok(options.args.includes('--ignore-rules'));
       assert.ok(options.args.includes('--json'));
@@ -130,6 +132,65 @@ test('Codex runner passes task data through stdin and preserves stage permission
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('Codex uses the explicitly selected model and reasoning effort for every stage', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-model-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const worktree = join(directory, 'checkout');
+  await mkdir(worktree);
+  const run = fixtureRun(worktree);
+  const captured: ExecuteOptions[] = [];
+  const responses = [plan, { summary: 'Implemented' }, { summary: 'Reviewed', findings: [] }];
+  const runner = new CodexRunner({
+    home: join(directory, 'home'),
+    model: 'gpt-6.1-sol',
+    reasoningEffort: 'high',
+    sandbox: {
+      doctor: async () => [{ name: 'fake', ok: true, detail: 'Not isolation evidence' }],
+    },
+    executor: async (options) => {
+      captured.push(options);
+      return { exitCode: 0, stdout: transcript(responses.shift()), stderr: '', durationMs: 1 };
+    },
+  });
+  await runner.run('plan', { run });
+  run.plan = plan;
+  run.planApproval = 'approved';
+  await runner.run('implement', { run });
+  await runner.run('review', { run, diff: 'diff data' });
+  assert.equal(captured.length, 3);
+  for (const { args } of captured) {
+    assert.ok(args.includes('--ignore-user-config'));
+    assert.equal(args[args.indexOf('--model') + 1], 'gpt-6.1-sol');
+    const effortIndex = args.indexOf('model_reasoning_effort="high"');
+    assert.ok(effortIndex > 0);
+    assert.equal(args[effortIndex - 1], '-c');
+  }
+});
+
+test('Codex rejects invalid model selection before doctor or execution', () => {
+  let calls = 0;
+  const options = {
+    home: join(tmpdir(), 'unused-model-home'),
+    sandbox: {
+      doctor: async () => {
+        calls++;
+        return [];
+      },
+    },
+    executor: async () => {
+      calls++;
+      throw new Error('must not run');
+    },
+  };
+  for (const model of ['', '-injected-option', 'model\nother', 'model name', 'a'.repeat(129)])
+    assert.throws(() => new CodexRunner({ ...options, model }), /model/i);
+  assert.throws(
+    () => new CodexRunner({ ...options, reasoningEffort: 'unsupported' as never }),
+    /reasoningEffort/,
+  );
+  assert.equal(calls, 0);
 });
 
 test('Codex runner fails closed before a model invocation when isolation is unavailable', async () => {

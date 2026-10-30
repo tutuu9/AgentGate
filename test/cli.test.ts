@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RunSchema } from '../src/core/contracts.ts';
@@ -12,6 +12,9 @@ test('CLI help is available without credentials or state initialization', () => 
   const result = spawnSync(process.execPath, ['src/cli/main.ts', '--help'], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /agentgate run/);
+  assert.match(result.stdout, /--model <id>/);
+  assert.match(result.stdout, /--reasoning-effort <effort>/);
+  assert.match(result.stdout, /repeat them when resuming/);
 });
 
 test('CLI does not offer noninteractive approval bypasses', () => {
@@ -27,6 +30,37 @@ test('CLI does not offer noninteractive approval bypasses', () => {
   });
   assert.notEqual(bypass.status, 0);
   assert.match(bypass.stderr, /Unknown option/);
+});
+
+test('run and resume accept explicit model options without bypassing interactive approval', () => {
+  for (const command of ['run', 'resume']) {
+    const result = spawnSync(
+      process.execPath,
+      ['src/cli/main.ts', command, '--model', 'gpt-6.1-sol', '--reasoning-effort', 'high'],
+      { encoding: 'utf8' },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /interactive terminal/);
+  }
+});
+
+test('CLI rejects invalid or misplaced model options before initializing state', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-model-cli-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const home = join(directory, 'state-must-not-exist');
+  const cases = [
+    { args: ['run', '--model', 'bad model'], error: /lowercase model identifier/ },
+    { args: ['resume', '--reasoning-effort', 'unknown'], error: /reasoningEffort/ },
+    { args: ['doctor', '--model', 'gpt-6.1-sol'], error: /only supported for run and resume/ },
+  ];
+  for (const { args, error } of cases) {
+    const result = spawnSync(process.execPath, ['src/cli/main.ts', ...args, '--home', home], {
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, error);
+    await assert.rejects(access(home), { code: 'ENOENT' });
+  }
 });
 
 test('inspect includes unstaged and new files, but never changes a live run index', async (t) => {

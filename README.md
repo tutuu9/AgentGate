@@ -101,6 +101,15 @@ Use a native Windows path when running in PowerShell. Registration suggests exis
 
 Commands and arguments are separate values, not shell snippets. Every listed check is mandatory; do not omit a required check just to obtain a green result. Registration and approvals require an interactive terminal and default to declining; there is no `--yes` bypass.
 
+To select the model and reasoning effort explicitly for every agent stage in a run:
+
+```sh
+agentgate run https://github.com/YOUR-OWNER/YOUR-REPO/issues/123 --repo example --model gpt-6.1-sol --reasoning-effort high
+agentgate resume RUN-ID --model gpt-6.1-sol --reasoning-effort high
+```
+
+These options apply to the current invocation; repeat them on `resume`. AgentGate ignores the Codex user configuration during agent execution, so configure the selection through these flags. Omitting the flags leaves model selection to the pinned CLI's defaults. The selected model must be available to the authenticated account; AgentGate does not retry with a different model or API billing if it is unavailable.
+
 After plan approval, the CLI shows the worktree and pauses for dependency preparation. Review dependency scripts before running an installer there, then confirm that the approved checks work offline. AgentGate does not install packages automatically or supply production secrets. Changes outside the approved path scope block progress rather than silently expanding the plan.
 
 ## Inspect, resume, and clean up

@@ -10,7 +10,7 @@ import { FileRunStore } from '../core/store.ts';
 import { hasUncertainTermination } from '../core/errors.ts';
 import { cleanTerminal, redact } from '../core/safety.ts';
 import { Workflow } from '../core/workflow.ts';
-import { CodexRunner } from '../adapters/codex.ts';
+import { CodexModelOptionsSchema, CodexRunner } from '../adapters/codex.ts';
 import { CodexSandbox } from '../adapters/sandbox.ts';
 import { GitHubCli } from '../adapters/github.ts';
 import { execute } from '../adapters/process.ts';
@@ -30,6 +30,11 @@ Usage:
 Options:
   --home <path>   State directory (default: AGENTGATE_HOME or ~/.agentgate)
   --help         Show this help
+
+Run/resume options:
+  --model <id>                 Explicit Codex model identifier
+  --reasoning-effort <effort>   low, medium, high, xhigh, or max
+Model options apply to this invocation only; repeat them when resuming a run.
 
 Requires Node.js 24, Git, GitHub CLI, and a verified Codex sandbox.
 Run/repo add/resume/cleanup require an interactive terminal; there is no --yes bypass.
@@ -52,6 +57,8 @@ export async function main(argv: string[]): Promise<number> {
       repo: { type: 'string' },
       name: { type: 'string' },
       checks: { type: 'string' },
+      model: { type: 'string' },
+      'reasoning-effort': { type: 'string' },
     },
   });
   if (values.help || !positionals.length) {
@@ -63,6 +70,16 @@ export async function main(argv: string[]): Promise<number> {
   const command = positionals[0];
   if (!['doctor', 'repo', 'run', 'status', 'inspect', 'resume', 'cleanup'].includes(command!))
     throw new Error(`Unknown command: ${command}. Use --help.`);
+  if (
+    (values.model !== undefined || values['reasoning-effort'] !== undefined) &&
+    command !== 'run' &&
+    command !== 'resume'
+  )
+    throw new Error('--model and --reasoning-effort are only supported for run and resume.');
+  const modelOptions = CodexModelOptionsSchema.parse({
+    model: values.model,
+    reasoningEffort: values['reasoning-effort'],
+  });
   const interactive = ['repo', 'run', 'resume', 'cleanup'].includes(command!);
   if (interactive && (!process.stdin.isTTY || !process.stdout.isTTY))
     throw new Error('This command requires an interactive terminal for explicit approvals.');
@@ -190,7 +207,11 @@ export async function main(argv: string[]): Promise<number> {
       sandbox,
       git,
       ui,
-      agent: new CodexRunner({ home, codexPath: process.env.AGENTGATE_CODEX_PATH }),
+      agent: new CodexRunner({
+        home,
+        codexPath: process.env.AGENTGATE_CODEX_PATH,
+        ...modelOptions,
+      }),
     });
     const run =
       command === 'run'
