@@ -311,9 +311,11 @@ async function linuxDescendantStopped(pid: number): Promise<boolean> {
   }
 }
 
-for (const reason of ['output-limit', 'aborted', 'timeout'] as const) {
+for (const reason of ['output-limit', 'aborted', 'timeout', 'orphaned-output'] as const) {
   test(
-    `Linux pipe transport ${reason} stops the owned descendant`,
+    reason === 'orphaned-output'
+      ? 'Linux pipe transport times out when an exited target leaves a descendant holding output open'
+      : `Linux pipe transport ${reason} stops the owned descendant`,
     { skip: process.platform !== 'linux' },
     async () => {
       const directory = await mkdtemp(join(tmpdir(), 'agentgate-pipe-stop-'));
@@ -321,14 +323,20 @@ for (const reason of ['output-limit', 'aborted', 'timeout'] as const) {
       const child = `const fs=require('node:fs');const [marker,reason]=process.argv.slice(1);let counter=0;
 setInterval(()=>{fs.writeFileSync(marker,JSON.stringify({pid:process.pid,counter:++counter}));if(reason==='output-limit'&&counter===3){process.stdout.write('a'.repeat(2048));process.stderr.write('b'.repeat(2048));}},25);
 setTimeout(()=>process.exit(0),30000);`;
-      const parent = `const {spawn}=require('node:child_process');const [marker,reason,script]=process.argv.slice(1);
-spawn(process.execPath,['-e',script,marker,reason],{shell:false,stdio:'inherit'});setTimeout(()=>process.exit(0),30000);`;
+      const parent = `const {spawn}=require('node:child_process');const fs=require('node:fs');const [marker,reason,script]=process.argv.slice(1);
+const child=spawn(process.execPath,['-e',script,marker,reason],{shell:false,stdio:'inherit'});
+if(reason==='orphaned-output'){
+  process.on('exit',code=>fs.writeFileSync(marker+'.parent',JSON.stringify({pid:process.pid,code})));
+  child.once('spawn',()=>process.exit(0));
+}else setTimeout(()=>process.exit(0),30000);`;
       const abort = new AbortController();
+      const expectedFailure = reason === 'orphaned-output' ? 'timeout' : reason;
+      const started = Date.now();
       const running = execute({
         command: process.execPath,
         args: ['-e', parent, marker, reason, child],
         signal: abort.signal,
-        timeoutMs: reason === 'timeout' ? 2000 : 10_000,
+        timeoutMs: expectedFailure === 'timeout' ? 2000 : 10_000,
         maxOutputBytes: reason === 'output-limit' ? 3000 : 8192,
         linuxPipeTransport: true,
       }).then(
@@ -356,15 +364,48 @@ spawn(process.execPath,['-e',script,marker,reason],{shell:false,stdio:'inherit'}
           if (pid === undefined) await delay(20);
         }
         assert.ok(pid, 'The descendant must be running before termination is tested.');
+        if (reason === 'orphaned-output') {
+          let parentExit: { pid: number; code: number } | undefined;
+          for (let index = 0; index < 50 && !parentExit; index++) {
+            try {
+              parentExit = JSON.parse(await readFile(`${marker}.parent`, 'utf8'));
+            } catch (error) {
+              if (
+                !(error instanceof SyntaxError) &&
+                !(error instanceof Error && 'code' in error && error.code === 'ENOENT')
+              )
+                throw error;
+            }
+            if (!parentExit) await delay(20);
+          }
+          assert.ok(parentExit, 'The target must report its actual exit code.');
+          assert.equal(parentExit.code, 0, 'The target itself must exit successfully.');
+          assert.ok(Number.isSafeInteger(parentExit.pid) && parentExit.pid > 0);
+          let parentStopped = false;
+          for (let index = 0; index < 50 && !parentStopped; index++) {
+            parentStopped = await linuxDescendantStopped(parentExit.pid);
+            if (!parentStopped) await delay(20);
+          }
+          assert.ok(
+            parentStopped,
+            'The target must have exited while its descendant holds output.',
+          );
+          assert.equal(await linuxDescendantStopped(pid), false);
+        }
         if (reason === 'aborted') abort.abort();
         const outcome = await running;
         assert.ok('error' in outcome && outcome.error instanceof ProcessError);
-        assert.equal(outcome.error.kind, reason);
+        assert.equal(outcome.error.kind, expectedFailure);
         for (let index = 0; index < 100 && !stopped; index++) {
           stopped = await linuxDescendantStopped(pid);
           if (!stopped) await delay(20);
         }
         assert.ok(stopped, 'The descendant must stop before its safety self-exit.');
+        if (reason === 'orphaned-output')
+          assert.ok(
+            Date.now() - started < 25_000,
+            'The 30-second safety exit must not satisfy this test.',
+          );
         const heartbeat = await readFile(marker, 'utf8');
         await delay(150);
         assert.equal(await readFile(marker, 'utf8'), heartbeat);
