@@ -18,6 +18,7 @@ import {
   ProcessError,
   resolveCommand,
   type ExecuteResult,
+  type ExecuteOptions,
   type Executor,
 } from './process.ts';
 
@@ -53,6 +54,54 @@ export interface SandboxSession {
   env: NodeJS.ProcessEnv;
   configArgs: string[];
   cleanup(): Promise<void>;
+}
+
+/** Native Linux descendants can leave the launcher's process group; stops remain unverified. */
+export async function executeSandbox(
+  options: ExecuteOptions,
+  executor: Executor = execute,
+): Promise<ExecuteResult> {
+  try {
+    return await executor(options);
+  } catch (error) {
+    if (process.platform !== 'linux' || hasUncertainTermination(error)) throw error;
+    const pending: unknown[] = [error];
+    const seen = new Set<object>();
+    let unverifiedStop = options.signal?.aborted ?? false;
+    while (pending.length && !unverifiedStop) {
+      const value = pending.pop();
+      if (value === null || typeof value !== 'object' || seen.has(value)) continue;
+      seen.add(value);
+      if ('kind' in value && ['aborted', 'timeout', 'output-limit'].includes(String(value.kind))) {
+        unverifiedStop = true;
+        break;
+      }
+      if ('cause' in value) pending.push(value.cause);
+      if (value instanceof AggregateError) pending.push(...value.errors);
+    }
+    if (unverifiedStop) {
+      const failure = new ProcessError(
+        'termination',
+        'Linux native sandbox descendant shutdown is unverified; retain the lock and fixtures.',
+      );
+      failure.cause = error;
+      throw failure;
+    }
+    throw error;
+  }
+}
+
+function includeWorkflowSupport(checks: DoctorCheck[]): DoctorCheck[] {
+  if (process.platform !== 'linux') return checks;
+  return [
+    ...checks,
+    {
+      name: 'linux-workflow-support',
+      ok: false,
+      detail:
+        'Linux workflows are blocked: native descendant cancellation and captured Node child streams are not supported by the verified runtime. Physical diagnostics do not authorize execution.',
+    },
+  ];
 }
 
 /** Cleanup failure must never hide an uncertain process-tree termination. */
@@ -425,14 +474,27 @@ async function probeHostUnchanged(
   writable: boolean,
 ): Promise<boolean> {
   if (!(await absent(paths.outside))) return false;
-  const identity = await lstat(paths.sentinel, { bigint: true });
-  if (
-    identity.dev !== canary.dev ||
-    identity.ino !== canary.ino ||
-    (await readFile(paths.sentinel, 'utf8')) !== canary.content
-  )
-    return false;
-  return writable ? (await readFile(paths.write, 'utf8')) === paths.nonce : absent(paths.write);
+  try {
+    const identity = await lstat(paths.sentinel, { bigint: true });
+    if (
+      identity.dev !== canary.dev ||
+      identity.ino !== canary.ino ||
+      identity.size !== BigInt(Buffer.byteLength(canary.content)) ||
+      (await readFile(paths.sentinel, 'utf8')) !== canary.content
+    )
+      return false;
+    if (!writable) return absent(paths.write);
+    const written = await lstat(paths.write);
+    return (
+      written.isFile() &&
+      !written.isSymbolicLink() &&
+      written.size === Buffer.byteLength(paths.nonce) &&
+      (await readFile(paths.write, 'utf8')) === paths.nonce
+    );
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false;
+    throw error;
+  }
 }
 
 function probeScript(paths: ProbePaths): string {
@@ -584,15 +646,18 @@ export class CodexSandbox implements SandboxRunner {
       session = await createSandboxSession(this.home, undefined, false, this.codexPath);
       const checks = await this.prerequisites(session, signal);
       signal?.throwIfAborted();
-      if (checks.some((check) => !check.ok && check.name !== 'codex-auth')) return checks;
+      if (checks.some((check) => !check.ok && check.name !== 'codex-auth'))
+        return includeWorkflowSupport(checks);
       checks.push(...(await this.probeIsolation(signal)));
-      return checks;
+      return includeWorkflowSupport(checks);
     } catch (error) {
       failed = true;
       uncertain = hasUncertainTermination(error);
       if (uncertain) throw error;
       signal?.throwIfAborted();
-      return [{ name: 'sandbox-doctor', ok: false, detail: diagnostic(error) }];
+      return includeWorkflowSupport([
+        { name: 'sandbox-doctor', ok: false, detail: diagnostic(error) },
+      ]);
     } finally {
       if (!uncertain) await cleanupPreservingError(async () => session?.cleanup(), failed);
     }
@@ -608,28 +673,31 @@ export class CodexSandbox implements SandboxRunner {
     const cancellation = new AbortController();
     const workerSignal = AbortSignal.any([cancellation.signal, ...(signal ? [signal] : [])]);
     let stopped = false;
-    const execution = this.executor({
-      command: session.codexExecutable ?? this.codexPath,
-      linuxPipeTransport: true,
-      args: [
-        ...session.configArgs,
-        'sandbox',
-        '--include-managed-config',
-        '-P',
-        session.profile,
-        '-C',
-        session.launcher,
-        '--',
-        process.execPath,
-        '-e',
-        probeScript(paths),
-      ],
-      cwd: session.launcher,
-      env: session.env,
-      timeoutMs: 20_000,
-      maxOutputBytes: 128 * 1024,
-      signal: workerSignal,
-    })
+    const execution = executeSandbox(
+      {
+        command: session.codexExecutable ?? this.codexPath,
+        linuxPipeTransport: true,
+        args: [
+          ...session.configArgs,
+          'sandbox',
+          '--include-managed-config',
+          '-P',
+          session.profile,
+          '-C',
+          session.launcher,
+          '--',
+          process.execPath,
+          '-e',
+          probeScript(paths),
+        ],
+        cwd: session.launcher,
+        env: session.env,
+        timeoutMs: 20_000,
+        maxOutputBytes: 128 * 1024,
+        signal: workerSignal,
+      },
+      this.executor,
+    )
       .then(
         (result) => ({ result }),
         (error: unknown) => ({ error }),
@@ -827,30 +895,33 @@ export class CodexSandbox implements SandboxRunner {
       const command = session.checkCommand;
       // The fixed Node trampoline changes cwd without exposing the project to Codex config discovery.
       const trampoline = `const {spawn}=require('node:child_process');const [cwd,cmd,...args]=process.argv.slice(1);process.chdir(cwd);const p=spawn(cmd,args,{shell:false,stdio:'inherit',windowsHide:true});p.on('error',error=>{require('node:fs').writeSync(2,JSON.stringify({code:typeof error.code==='string'?error.code:null})+'\\n');process.exit(127)});p.on('exit',(code)=>process.exit(code??1));`;
-      const result = await this.executor({
-        command: session.codexExecutable ?? this.codexPath,
-        linuxPipeTransport: true,
-        args: [
-          ...session.configArgs,
-          'sandbox',
-          '--include-managed-config',
-          '-P',
-          session.profile,
-          '-C',
-          session.launcher,
-          '--',
-          process.execPath,
-          '-e',
-          trampoline,
-          resolve(worktree),
-          command.command,
-          ...command.args,
-        ],
-        cwd: session.launcher,
-        env: session.env,
-        timeoutMs: Math.min(spec.timeoutMs, 600_000),
-        signal,
-      });
+      const result = await executeSandbox(
+        {
+          command: session.codexExecutable ?? this.codexPath,
+          linuxPipeTransport: true,
+          args: [
+            ...session.configArgs,
+            'sandbox',
+            '--include-managed-config',
+            '-P',
+            session.profile,
+            '-C',
+            session.launcher,
+            '--',
+            process.execPath,
+            '-e',
+            trampoline,
+            resolve(worktree),
+            command.command,
+            ...command.args,
+          ],
+          cwd: session.launcher,
+          env: session.env,
+          timeoutMs: Math.min(spec.timeoutMs, 600_000),
+          signal,
+        },
+        this.executor,
+      );
       return {
         name: spec.name,
         exitCode: result.exitCode,

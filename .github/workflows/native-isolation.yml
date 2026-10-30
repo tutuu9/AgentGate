@@ -81,8 +81,12 @@ jobs:
       - name: Verify native filesystem and network isolation without a model
         id: isolation
         run: node test/manual/verify-isolation.ts "$AGENTGATE_CODEX_PATH" | tee "$RUNNER_TEMP/agentgate-isolation.jsonl"
-      - name: Verify offline Node and TypeScript checks without a model
-        run: node test/manual/verify-toolchain.ts "$AGENTGATE_CODEX_PATH"
+      - name: Verify native descendant cancellation in a fresh fixture
+        if: ${{ !cancelled() && steps.isolation.outcome == 'success' }}
+        run: node test/manual/verify-toolchain.ts "$AGENTGATE_CODEX_PATH" --mode cancellation
+      - name: Verify offline Node and TypeScript checks in a separate fresh fixture
+        if: ${{ !cancelled() && steps.isolation.outcome == 'success' }}
+        run: node test/manual/verify-toolchain.ts "$AGENTGATE_CODEX_PATH" --mode toolchain
       - name: Verify real process cancellation and stale-lock refusal
         if: ${{ !cancelled() && steps.isolation.outcome == 'success' }}
         run: node test/manual/verify-lock-recovery.ts

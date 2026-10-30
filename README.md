@@ -2,7 +2,7 @@
 
 A local TypeScript CLI that takes a selected GitHub Issue through an approved plan, isolated coding work, checks, review, and a separately approved pull request.
 
-**Status: implementation preview (`0.1.0-dev.0`). Real Windows MXC workflow and recovery acceptance passed; Linux acceptance remains open. No stable release has been declared.** See the [acceptance record](docs/acceptance.md) for evidence and outstanding checks. Mocked adapter tests do not establish real isolation.
+**Status: implementation preview (`0.1.0-dev.0`). Real Windows MXC workflow and recovery acceptance passed. Linux workflows are blocked pending native cancellation and Node compatibility fixes. No stable release has been declared.** See the [acceptance record](docs/acceptance.md) for evidence and outstanding checks. Mocked adapter tests do not establish real isolation.
 
 Windows uses explicit MXC isolation with networking disabled. The earlier legacy Windows attempt with Codex 0.154.0 failed the outside-file read and loopback-network boundaries; that backend is no longer selected. Every environment must pass the real probes before model execution. See the [acceptance record](docs/acceptance.md) for measured results.
 
@@ -23,13 +23,13 @@ If draft PRs are unavailable, AgentGate asks again before creating an ordinary P
 
 - Node.js **24** and npm; Git; GitHub CLI (`gh`) authenticated to your own GitHub account.
 - A local repository with an `origin` on `github.com` and permission to push a branch and create a PR. Public and private repositories are supported by the workflow; GitHub account and organization policies still apply.
-- **Codex CLI 0.166.0 on Windows**, or **0.154.0 on Linux**, with ChatGPT authentication in a separate AgentGate profile. Other versions fail the compatibility check until explicitly validated.
-- Native Windows with Microsoft Execution Containers (MXC), or Linux with the required Codex sandbox available. Windows selects MXC explicitly and blocks execution if the device or managed policy cannot support it; there is no legacy fallback. See [MXC compatibility](https://learn.chatgpt.com/docs/windows/windows-sandbox#mxc-compatibility).
+- **Codex CLI 0.166.0 on Windows**, with ChatGPT authentication in a separate AgentGate profile. Linux diagnostics pin **0.154.0**, but Linux workflow execution is currently blocked. Other versions fail the compatibility check until explicitly validated.
+- Native Windows with Microsoft Execution Containers (MXC). Windows selects MXC explicitly and blocks execution if the device or managed policy cannot support it; there is no legacy fallback. See [MXC compatibility](https://learn.chatgpt.com/docs/windows/windows-sandbox#mxc-compatibility).
 - Dependencies and check tools that can run offline. The preview targets Node.js/TypeScript repositories and one active run per AgentGate state directory.
 
 Linux needs distribution-provided `bubblewrap` and permission to create its sandbox namespaces. On Ubuntu 24.04, a missing distro `bwrap-userns-restrict` AppArmor profile can prevent startup; follow the [official Linux sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing#prerequisites). The native acceptance job checks namespace creation first and loads the packaged profile only when needed. It preserves the system-wide AppArmor setting and runs Codex as the ordinary runner user. An unavailable profile or failed native probe blocks acceptance.
 
-Linux sandbox commands also require `/bin/bash` and `/usr/bin/cat` for their fixed pipe transport. Linux acceptance remains incomplete: captured stdin/stdout/stderr of nested Node processes is incompatible with the pinned sandbox's network syscall restrictions. The live fixture reported `EPERM`, missing input, and discarded console output. Passing ordinary behavior tests or the outer command's stream checks does not resolve this compatibility limitation.
+Linux diagnostics also require `/bin/bash` and `/usr/bin/cat` for their fixed pipe transport. Real filesystem/network isolation passed, but a native descendant continued running after cancellation. Captured stdin/stdout/stderr of nested Node processes also reported `EPERM`, missing input, and discarded console output. The production doctor therefore reports `linux-workflow-support: false` and prevents model stages and project checks from starting. Passing physical probes or ordinary Ubuntu tests does not override this gate. Native Linux aborts, timeouts, and output-limit failures retain state because descendant termination is unverified.
 
 Controller npm checks support the standard `node_modules/npm` installation layout. AgentGate validates that package and runs its selected entry point with the controller's Node.js 24. Only the npm package receives additional read access for those checks; an unsupported layout or a runtime inside the worktree/state directory is rejected.
 

@@ -18,6 +18,7 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Fixed
 
+- Block Linux workflows after native cancellation and captured Node stream failures; retain state after unverified native stops.
 - Resolve controller npm checks once and grant Linux checks read access only to the validated npm runtime package.
 - Verify sandbox writes against live and post-exit host observations, including unchanged outside canaries and actual workspace writes.
 - Preserve Linux sandbox command output with real POSIX pipes while retaining the network syscall restrictions.
@@ -30,4 +31,4 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Status
 
-- Package version `0.1.0-dev.0` is an implementation preview. Windows MXC isolation, real Issue-to-draft-PR runs, and controlled workflow recovery passed; Linux acceptance remains open. No stable release or public npm publication is claimed.
+- Package version `0.1.0-dev.0` is an implementation preview. Windows MXC isolation, real Issue-to-draft-PR runs, and controlled workflow recovery passed. Linux filesystem/network isolation passed, but workflow execution remains blocked by native descendant cancellation and captured Node stream failures. No stable release or public npm publication is claimed.

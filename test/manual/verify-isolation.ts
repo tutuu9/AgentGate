@@ -11,6 +11,7 @@ import {
   CODEX_VERSION,
   CodexSandbox,
   createSandboxSession,
+  executeSandbox,
   isolatedEnvironment,
   type SandboxSession,
 } from '../../src/adapters/sandbox.ts';
@@ -369,7 +370,7 @@ async function runStage(
     const stageAbort = new AbortController();
     const signal = AbortSignal.any([abort.signal, stageAbort.signal]);
     let stopped = false;
-    const execution = execute({
+    const execution = executeSandbox({
       command: session.codexExecutable ?? codexPath,
       linuxPipeTransport: true,
       args: [
@@ -507,7 +508,7 @@ async function verifyCommandTransport(codexPath: string, home: string): Promise<
   try {
     return await withSession(codexPath, home, workspace.path, false, async (session) => {
       const runCommand = (command: string, args: string[], input?: string) =>
-        execute({
+        executeSandbox({
           command: session.codexExecutable ?? codexPath,
           linuxPipeTransport: true,
           args: [
@@ -719,7 +720,7 @@ const read=path=>{try{return fs.readFileSync(path,'utf8')}catch{return null}};
           const outsideAbort = new AbortController();
           const outsideSignal = AbortSignal.any([abort.signal, outsideAbort.signal]);
           let outsideStopped = false;
-          const outsideExecution = execute({
+          const outsideExecution = executeSandbox({
             command: outsideSession.codexExecutable ?? codexPath,
             linuxPipeTransport: true,
             args: [
@@ -972,16 +973,24 @@ async function main(): Promise<void> {
     ];
     const authentication = doctor.filter((check) => check.name === 'codex-auth');
     const unauthenticated = authentication.length === 1 && !authentication[0]!.ok;
+    const workflowGate = doctor.filter((check) => check.name === 'linux-workflow-support');
+    const expectedWorkflowGate =
+      process.platform === 'linux'
+        ? workflowGate.length === 1 && !workflowGate[0]!.ok
+        : workflowGate.length === 0;
     const isolationVerified =
+      expectedWorkflowGate &&
       requiredChecks.every(
         (name) => doctor.filter((check) => check.name === name && check.ok).length === 1,
-      ) && doctor.length === requiredChecks.length + 1;
+      ) &&
+      doctor.length === requiredChecks.length + 1 + workflowGate.length;
     emit({
       phase: 'doctor',
       nativeProbeInvocations,
       checks: doctor,
       unauthenticated,
       isolationVerified,
+      workflowSupport: workflowGate,
       workflowAuthorized: false,
       modelInvoked: false,
     });

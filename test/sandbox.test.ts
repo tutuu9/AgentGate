@@ -16,16 +16,20 @@ import { tmpdir, userInfo } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
+import { CodexRunner } from '../src/adapters/codex.ts';
+import { RunSchema } from '../src/core/contracts.ts';
 import {
   CODEX_VERSION,
   CodexSandbox,
   createCheckSandboxSession,
   createSandboxSession,
   DISABLED_FEATURES,
+  executeSandbox,
   isolatedEnvironment,
   redactOutput,
 } from '../src/adapters/sandbox.ts';
 import { ProcessError, type ExecuteOptions, type Executor } from '../src/adapters/process.ts';
+import { hasUncertainTermination } from '../src/core/errors.ts';
 
 test('isolated environments exclude credentials, shell options and proxies', () => {
   const env = isolatedEnvironment('/agentgate', '/temporary', {
@@ -603,10 +607,10 @@ test('doctor preserves launchers and probe fixtures until uncertain termination 
   }
 });
 
-test('doctor cleans native probe fixtures after a verified timeout or cancellation', async (t) => {
+test('native probe stops preserve Linux fixtures and clean verified Windows stops', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'agentgate-doctor-cleanup-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  for (const kind of ['timeout', 'aborted'] as const) {
+  for (const kind of ['timeout', 'aborted', 'output-limit'] as const) {
     const home = join(directory, kind);
     const prerequisites = prerequisiteExecutor();
     const sandbox = new CodexSandbox({
@@ -620,12 +624,144 @@ test('doctor cleans native probe fixtures after a verified timeout or cancellati
       },
     });
 
-    const checks = await sandbox.doctor();
-
-    assert.equal(checks.find((check) => check.name === 'sandbox-read')?.ok, false);
-    assert.deepEqual(await readdir(join(home, 'runtime')), []);
+    if (process.platform === 'linux') {
+      await assert.rejects(sandbox.doctor(), hasUncertainTermination);
+      const retained = await readdir(join(home, 'runtime'));
+      assert.ok(retained.some((name) => name.startsWith('probe-')));
+      assert.ok(retained.some((name) => !name.startsWith('probe-')));
+    } else {
+      const checks = await sandbox.doctor();
+      assert.equal(checks.find((check) => check.name === 'sandbox-read')?.ok, false);
+      assert.deepEqual(await readdir(join(home, 'runtime')), []);
+    }
   }
 });
+
+test('native execution retains interrupted Linux errors as uncertain without masking their cause', async () => {
+  const options: ExecuteOptions = { command: process.execPath, args: ['--version'] };
+  for (const kind of ['aborted', 'timeout', 'output-limit'] as const) {
+    for (const nested of [false, true]) {
+      const stop = new ProcessError(kind, 'Synthetic native stop; not isolation evidence.');
+      const failure = nested
+        ? new Error('Wrapped native failure', { cause: new AggregateError([stop]) })
+        : stop;
+      await assert.rejects(
+        executeSandbox(options, async () => {
+          throw failure;
+        }),
+        (error) =>
+          process.platform === 'linux'
+            ? hasUncertainTermination(error) && error instanceof Error && error.cause === failure
+            : error === failure,
+      );
+    }
+  }
+  const abort = new AbortController();
+  const cancelled = new DOMException('Native probe was interrupted.', 'AbortError');
+  await assert.rejects(
+    executeSandbox({ ...options, signal: abort.signal }, async () => {
+      abort.abort(cancelled);
+      throw cancelled;
+    }),
+    (error) =>
+      process.platform === 'linux'
+        ? hasUncertainTermination(error) && error instanceof Error && error.cause === cancelled
+        : error === cancelled,
+  );
+  for (const failure of [
+    new ProcessError('spawn', 'The native executable did not start.'),
+    new AggregateError([new ProcessError('termination', 'Already unverified.')]),
+  ]) {
+    await assert.rejects(
+      executeSandbox(options, async () => {
+        throw failure;
+      }),
+      (error) => error === failure,
+    );
+  }
+  const result = { exitCode: 37, stdout: 'out', stderr: 'err', durationMs: 1 };
+  assert.equal(await executeSandbox(options, async () => result), result);
+});
+
+test(
+  'Linux doctor blocks model stages and direct checks despite authenticated physical success',
+  { skip: process.platform !== 'linux' },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-linux-workflow-blocked-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const prerequisites = prerequisiteExecutor();
+    let physicalCalls = 0;
+    const options = {
+      codexPath: process.execPath,
+      home: directory,
+      connectivity: async () => true,
+      executor: async (options: ExecuteOptions) => {
+        assert.ok(!options.args.includes('exec'), 'A model command must never be launched.');
+        if (!options.args.includes('sandbox') || options.args.includes('--help'))
+          return prerequisites(options);
+        const script = options.args[options.args.indexOf('-e') + 1]!;
+        assert.ok(script.includes('const p='), 'A workflow/check command must never be launched.');
+        physicalCalls++;
+        return syntheticProbe(options, {
+          readWorkspace: true,
+          writeWorkspace: options.args.some((argument) => /workspace"="write"/.test(argument)),
+          readSentinel: false,
+          writeSentinel: true,
+          writeOutside: true,
+          loopback: false,
+          egress: false,
+          credentials: false,
+        });
+      },
+    };
+    const sandbox = new CodexSandbox(options);
+    const checks = await sandbox.doctor();
+    assert.equal(checks.find((check) => check.name === 'codex-auth')?.ok, true);
+    assert.deepEqual(
+      checks.filter((check) => !check.ok).map((check) => check.name),
+      ['linux-workflow-support'],
+    );
+    assert.equal(physicalCalls, 2);
+    await assert.rejects(
+      sandbox.check(
+        { name: 'never', command: 'nonexistent-approved-command', args: [], timeoutMs: 1000 },
+        join(directory, 'nonexistent-worktree'),
+      ),
+      /Sandbox blocked: linux-workflow-support:.*cancellation.*captured Node/,
+    );
+    assert.equal(physicalCalls, 4);
+    const run = RunSchema.parse({
+      schemaVersion: 1,
+      id: 'b12e820a-6398-4448-9f80-de5b073a6d1a',
+      repo: {
+        name: 'fixture',
+        path: directory,
+        fullName: 'owner/repo',
+        baseBranch: 'main',
+        checks: [{ name: 'test', command: 'npm', args: ['test'], timeoutMs: 1000 }],
+      },
+      issue: {
+        url: 'https://github.com/owner/repo/issues/1',
+        number: 1,
+        title: 'Fixture',
+        body: '',
+      },
+      baseCommit: 'a'.repeat(40),
+      branch: 'agentgate/fixture',
+      worktree: directory,
+      status: 'planning',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const runner = new CodexRunner(options);
+    await assert.rejects(
+      runner.run('plan', { run }),
+      /Codex execution blocked: linux-workflow-support:.*cancellation.*captured Node/,
+    );
+    assert.equal(physicalCalls, 6);
+    assert.deepEqual(await readdir(join(directory, 'runtime')), []);
+  },
+);
 
 test('doctor rejects the other platform contract before executing a sandbox command', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'agentgate-platform-version-'));
@@ -754,11 +890,14 @@ test('check preserves uncertain worker scratch but cleans verified stopped worke
         { name: 'fixture', command: process.execPath, args: ['--version'], timeoutMs: 1000 },
         worktree,
       ),
-      (error) => error === failure,
+      (error) =>
+        process.platform === 'linux' && !kind.includes('termination')
+          ? hasUncertainTermination(error) && error instanceof Error && error.cause === failure
+          : error === failure,
     );
 
     assert.ok(launcher);
-    if (kind.includes('termination')) await access(launcher);
+    if (kind.includes('termination') || process.platform === 'linux') await access(launcher);
     else await assert.rejects(access(launcher), { code: 'ENOENT' });
   }
 });
@@ -803,7 +942,9 @@ test('synthetic probe observations fail closed on missing network evidence or fo
   try {
     const accepted = await sandbox.doctor();
     assert.equal(
-      accepted.every((check) => check.ok),
+      accepted
+        .filter((check) => check.name !== 'linux-workflow-support')
+        .every((check) => check.ok),
       true,
       'Synthetic observations test only the decision logic, not real isolation.',
     );
@@ -892,6 +1033,11 @@ test('doctor verifies host effects before accepting synthetic private namespace 
       },
     });
 
+    if (scenario === 'redirected-report') {
+      await assert.rejects(sandbox.doctor(), hasUncertainTermination);
+      assert.ok((await readdir(join(directory, scenario, 'runtime'))).length > 0);
+      continue;
+    }
     const checks = await sandbox.doctor();
     const boundaries = checks.filter((check) =>
       /^(?:sandbox-read|sandbox-write)$/.test(check.name),

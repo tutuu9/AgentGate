@@ -7,6 +7,7 @@ import test from 'node:test';
 import { buildAgentPrompt, CodexRunner, parseAgentOutput } from '../src/adapters/codex.ts';
 import { ProcessError, resolveCommand, type ExecuteOptions } from '../src/adapters/process.ts';
 import type { Plan, Run } from '../src/core/contracts.ts';
+import { hasUncertainTermination } from '../src/core/errors.ts';
 
 const plan: Plan = {
   objective: 'Fix behavior',
@@ -365,3 +366,34 @@ test('Codex retains session files for nested uncertain termination and cleans or
     });
   }
 });
+
+test(
+  'interrupted Linux model workers retain their session and original stop cause',
+  { skip: process.platform !== 'linux' },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-codex-native-stop-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    for (const kind of ['aborted', 'timeout', 'output-limit'] as const) {
+      const failure = new ProcessError(kind, 'Synthetic native stop; not isolation evidence.');
+      let schemaPath: string | undefined;
+      const runner = new CodexRunner({
+        home: join(directory, kind),
+        codexPath: process.execPath,
+        sandbox: {
+          doctor: async () => [{ name: 'fake', ok: true, detail: 'Not isolation evidence' }],
+        },
+        executor: async (options) => {
+          schemaPath = options.args[options.args.indexOf('--output-schema') + 1];
+          throw failure;
+        },
+      });
+      await assert.rejects(
+        runner.run('plan', { run: fixtureRun(directory) }),
+        (error) =>
+          hasUncertainTermination(error) && error instanceof Error && error.cause === failure,
+      );
+      assert.ok(schemaPath);
+      assert.equal(JSON.parse(await readFile(schemaPath, 'utf8')).type, 'object');
+    }
+  },
+);

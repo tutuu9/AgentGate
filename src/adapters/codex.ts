@@ -15,6 +15,7 @@ import {
   CodexSandbox,
   createSandboxSession,
   cleanupPreservingError,
+  executeSandbox,
   type CodexOptions,
 } from './sandbox.ts';
 
@@ -166,35 +167,38 @@ export class CodexRunner implements AgentRunner {
       });
       // A custom permission profile enforces stricter reads than the broad legacy sandbox flag.
       // Do not pass --sandbox alongside it: that would select a different permission policy.
-      const result = await this.executor({
-        command: session.codexExecutable ?? this.codexPath,
-        args: [
-          ...session.configArgs,
-          '-a',
-          'never',
-          'exec',
-          ...this.modelArgs,
-          '--ignore-user-config',
-          '--ignore-rules',
-          '--strict-config',
-          '--skip-git-repo-check',
-          '--ephemeral',
-          '--json',
-          '--color',
-          'never',
-          '--output-schema',
-          schemaPath,
-          '-C',
-          session.launcher,
-          '-',
-        ],
-        cwd: session.launcher,
-        env: session.env,
-        input: buildAgentPrompt(stage, context),
-        timeoutMs: 30 * 60_000,
-        maxOutputBytes: 4 * 1024 * 1024,
-        signal,
-      });
+      const result = await executeSandbox(
+        {
+          command: session.codexExecutable ?? this.codexPath,
+          args: [
+            ...session.configArgs,
+            '-a',
+            'never',
+            'exec',
+            ...this.modelArgs,
+            '--ignore-user-config',
+            '--ignore-rules',
+            '--strict-config',
+            '--skip-git-repo-check',
+            '--ephemeral',
+            '--json',
+            '--color',
+            'never',
+            '--output-schema',
+            schemaPath,
+            '-C',
+            session.launcher,
+            '-',
+          ],
+          cwd: session.launcher,
+          env: session.env,
+          input: buildAgentPrompt(stage, context),
+          timeoutMs: 30 * 60_000,
+          maxOutputBytes: 4 * 1024 * 1024,
+          signal,
+        },
+        this.executor,
+      );
       if (result.exitCode !== 0)
         throw new Error(
           `Codex ${stage} exited with code ${result.exitCode}; raw model output was discarded.`,

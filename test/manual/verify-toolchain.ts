@@ -15,10 +15,12 @@ import { arch, platform, release, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 import {
   CODEX_VERSION,
   createCheckSandboxSession,
   createSandboxSession,
+  executeSandbox,
 } from '../../src/adapters/sandbox.ts';
 import { execute, ProcessError } from '../../src/adapters/process.ts';
 import { hasUncertainTermination } from '../../src/core/errors.ts';
@@ -31,6 +33,12 @@ const abort = new AbortController();
 const interrupt = () => abort.abort(new Error('Toolchain acceptance cancelled.'));
 const emit = (value: unknown) =>
   process.stdout.write(`${cleanTerminal(redact(JSON.stringify(value)))}\n`);
+const resultScopes = {
+  all: 'native-offline-toolchain-and-cancellation',
+  cancellation: 'native-process-cancellation',
+  toolchain: 'native-offline-node-typescript-toolchain',
+} as const;
+let verificationMode: keyof typeof resultScopes = 'all';
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const source = `export function clamp(value: number, minimum: number, maximum: number): number {
   if (minimum > maximum) throw new RangeError('Reversed bounds');
@@ -131,7 +139,7 @@ async function runCheck(codexPath: string, home: string, workspace: string, name
     emit({ phase: 'resolved-check', name, ...command, modelInvoked: false });
     // Match the production check launch: resolve externally, then change cwd inside the sandbox.
     const trampoline = `const {spawn}=require('node:child_process');const [cwd,cmd,...args]=process.argv.slice(1);process.chdir(cwd);const p=spawn(cmd,args,{shell:false,stdio:'inherit',windowsHide:true});p.on('error',error=>{require('node:fs').writeSync(2,JSON.stringify({phase:'toolchain-spawn-failure',code:typeof error.code==='string'?error.code:null})+'\\n');process.exit(127)});p.on('exit',(code)=>process.exit(code??1));`;
-    return await execute({
+    return await executeSandbox({
       command: session.codexExecutable ?? codexPath,
       linuxPipeTransport: true,
       args: [
@@ -205,7 +213,7 @@ setTimeout(()=>process.exit(0),30000);`;
   const cancellation = new AbortController();
   const started = Date.now();
   let uncertain = false;
-  const execution = execute({
+  const execution = executeSandbox({
     command: session.codexExecutable ?? codexPath,
     linuxPipeTransport: true,
     args: [
@@ -297,9 +305,18 @@ setTimeout(()=>process.exit(0),30000);`;
 
 async function main(): Promise<void> {
   if (process.versions.node.split('.')[0] !== '24') throw new Error('Node.js 24 is required.');
-  if (process.argv.length !== 3 || !isAbsolute(process.argv[2]!))
-    throw new Error('Usage: node test/manual/verify-toolchain.ts <absolute-native-codex-path>');
-  const codexPath = await realpath(process.argv[2]!);
+  const { positionals, values } = parseArgs({
+    allowPositionals: true,
+    options: { mode: { type: 'string', default: 'all' } },
+  });
+  if (!Object.hasOwn(resultScopes, values.mode))
+    throw new Error('Mode must be all, cancellation, or toolchain.');
+  verificationMode = values.mode as keyof typeof resultScopes;
+  if (positionals.length !== 1 || !isAbsolute(positionals[0]!))
+    throw new Error(
+      'Usage: node test/manual/verify-toolchain.ts <absolute-native-codex-path> [--mode all|cancellation|toolchain]',
+    );
+  const codexPath = await realpath(positionals[0]!);
   if (!(await lstat(codexPath)).isFile()) throw new Error('Native Codex executable unavailable.');
   const temporary = await checkedDirectory(tmpdir());
   const home = await checkedDirectory(await mkdtemp(join(temporary, 'agentgate-toolchain-state-')));
@@ -316,6 +333,8 @@ async function main(): Promise<void> {
     await verifyVersion(codexPath, home);
     emit({
       phase: 'environment',
+      mode: verificationMode,
+      scope: resultScopes[verificationMode],
       os: platform(),
       osVersion: release(),
       architecture: arch(),
@@ -327,56 +346,75 @@ async function main(): Promise<void> {
       modelInvoked: false,
       authenticatedWorkflow: false,
     });
-    await prepareFixture(workspace);
-    await verifyCancellation(codexPath, home, workspace);
-    for (const name of ['lint', 'typecheck', 'test', 'build']) {
-      const result = await runCheck(codexPath, home, workspace, name);
-      emit({ phase: 'check', name, ...result });
-      assert.equal(result.exitCode, 0, `Offline npm ${name} failed.`);
-    }
-    assert.match(
-      await readFile(join(workspace, 'dist/src/clamp.js'), 'utf8'),
-      /export function clamp/,
-    );
-    const failures = [
-      {
-        name: 'lint',
-        path: 'src/clamp.ts',
-        contents: `${source}\nconst unusedFixtureValue = 1;\n`,
-        restore: source,
-        diagnostic: /unusedFixtureValue.*never used/,
-      },
-      {
-        name: 'typecheck',
-        path: 'src/clamp.ts',
-        contents: `${source}\nexport const invalidFixtureValue: number = 'wrong';\n`,
-        restore: source,
-        diagnostic: /TS2322/,
-      },
-      {
-        name: 'test',
-        path: 'test/clamp.test.ts',
-        contents: tests.replace('clamp(-1, 0, 10), 0', 'clamp(-1, 0, 10), 99'),
-        restore: tests,
-        diagnostic: /ERR_ASSERTION/,
-      },
-    ];
-    for (const failure of failures) {
-      const path = join(workspace, failure.path);
-      await writeFile(path, failure.contents);
-      try {
-        const result = await runCheck(codexPath, home, workspace, failure.name);
-        emit({ phase: 'expected-failure', name: failure.name, ...result });
-        assert.notEqual(result.exitCode, 0, `Injected ${failure.name} failure was not detected.`);
-        assert.match(`${result.stdout}\n${result.stderr}`, failure.diagnostic);
-      } catch (error) {
-        uncertain = hasUncertainTermination(error);
-        throw error;
-      } finally {
-        if (!uncertain) await writeFile(path, failure.restore);
+    if (verificationMode !== 'toolchain') await verifyCancellation(codexPath, home, workspace);
+    if (verificationMode !== 'cancellation') {
+      await prepareFixture(workspace);
+      const baselineResults: Array<{ name: string; exitCode: number }> = [];
+      for (const name of ['lint', 'typecheck', 'test', 'build']) {
+        const result = await runCheck(codexPath, home, workspace, name);
+        emit({ phase: 'check', name, ...result });
+        baselineResults.push({ name, exitCode: result.exitCode });
+      }
+      const failedChecks = baselineResults.filter((result) => result.exitCode !== 0);
+      emit({
+        phase: 'baseline-summary',
+        results: baselineResults,
+        passed: failedChecks.length === 0,
+      });
+      if (failedChecks.length)
+        throw new Error(
+          `Offline baseline checks failed: ${failedChecks.map((result) => result.name).join(', ')}. Injected failures were not run.`,
+        );
+      assert.match(
+        await readFile(join(workspace, 'dist/src/clamp.js'), 'utf8'),
+        /export function clamp/,
+      );
+      const failures = [
+        {
+          name: 'lint',
+          path: 'src/clamp.ts',
+          contents: `${source}\nconst unusedFixtureValue = 1;\n`,
+          restore: source,
+          diagnostic: /unusedFixtureValue.*never used/,
+        },
+        {
+          name: 'typecheck',
+          path: 'src/clamp.ts',
+          contents: `${source}\nexport const invalidFixtureValue: number = 'wrong';\n`,
+          restore: source,
+          diagnostic: /TS2322/,
+        },
+        {
+          name: 'test',
+          path: 'test/clamp.test.ts',
+          contents: tests.replace('clamp(-1, 0, 10), 0', 'clamp(-1, 0, 10), 99'),
+          restore: tests,
+          diagnostic: /ERR_ASSERTION/,
+        },
+      ];
+      for (const failure of failures) {
+        const path = join(workspace, failure.path);
+        await writeFile(path, failure.contents);
+        try {
+          const result = await runCheck(codexPath, home, workspace, failure.name);
+          emit({ phase: 'expected-failure', name: failure.name, ...result });
+          assert.notEqual(result.exitCode, 0, `Injected ${failure.name} failure was not detected.`);
+          assert.match(`${result.stdout}\n${result.stderr}`, failure.diagnostic);
+        } catch (error) {
+          uncertain = hasUncertainTermination(error);
+          throw error;
+        } finally {
+          if (!uncertain) await writeFile(path, failure.restore);
+        }
       }
     }
-    emit({ result: 'passed', modelInvoked: false, authenticatedWorkflow: false });
+    emit({
+      result: 'passed',
+      mode: verificationMode,
+      scope: resultScopes[verificationMode],
+      modelInvoked: false,
+      authenticatedWorkflow: false,
+    });
   } catch (error) {
     uncertain = hasUncertainTermination(error);
     throw error;
@@ -391,6 +429,8 @@ main()
   .catch((error) => {
     emit({
       result: 'blocked',
+      mode: verificationMode,
+      scope: resultScopes[verificationMode],
       error: error instanceof Error ? error.message : 'Toolchain acceptance failed.',
       uncertainTermination: hasUncertainTermination(error),
       modelInvoked: false,
