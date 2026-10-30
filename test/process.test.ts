@@ -306,7 +306,13 @@ async function linuxDescendantStopped(pid: number): Promise<boolean> {
     // A killed orphan may await reaping by init; a zombie cannot execute or keep writing.
     return ['Z', 'X'].includes(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0]!);
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return true;
+    // The process can disappear before opening /proc or between opening and reading it.
+    if (
+      error instanceof Error &&
+      'code' in error &&
+      (error.code === 'ENOENT' || error.code === 'ESRCH')
+    )
+      return true;
     throw error;
   }
 }
