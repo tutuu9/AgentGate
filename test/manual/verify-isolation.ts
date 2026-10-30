@@ -351,6 +351,92 @@ async function runStage(
   });
 }
 
+async function verifyCommandTransport(codexPath: string, home: string): Promise<void> {
+  const workspace = await fixture(join(home, 'runtime'), 'command-probe-');
+  let uncertain = false;
+  try {
+    await withSession(codexPath, home, workspace.path, false, async (session) => {
+      const commands = [
+        {
+          name: 'system-printf',
+          command: '/usr/bin/printf',
+          args: ['agentgate-printf-marker\n'],
+          exitCode: 0,
+          stdout: 'agentgate-printf-marker\n',
+          stderr: '',
+        },
+        {
+          name: 'node-stdout',
+          command: process.execPath,
+          args: ['-e', "console.log('agentgate-node-marker')"],
+          exitCode: 0,
+          stdout: 'agentgate-node-marker\n',
+          stderr: '',
+        },
+        {
+          name: 'node-nonzero',
+          command: process.execPath,
+          args: ['-e', "console.error('agentgate-exit-marker');process.exitCode=37"],
+          exitCode: 37,
+          stdout: '',
+          stderr: 'agentgate-exit-marker\n',
+        },
+        {
+          name: 'node-delayed-exit',
+          command: process.execPath,
+          args: [
+            '-e',
+            "console.log('started');setTimeout(()=>{console.log('finished');process.exitCode=37},250)",
+          ],
+          exitCode: 37,
+          stdout: 'started\nfinished\n',
+          stderr: '',
+        },
+      ];
+      let passed = true;
+      for (const command of commands) {
+        const result = await execute({
+          command: codexPath,
+          args: [
+            ...session.configArgs,
+            'sandbox',
+            '--include-managed-config',
+            '-P',
+            session.profile,
+            '-C',
+            session.launcher,
+            '--',
+            command.command,
+            ...command.args,
+          ],
+          cwd: session.launcher,
+          env: session.env,
+          signal: abort.signal,
+          timeoutMs: 10_000,
+          maxOutputBytes: 8192,
+        });
+        const commandPassed =
+          result.exitCode === command.exitCode &&
+          result.stdout === command.stdout &&
+          result.stderr === command.stderr;
+        passed &&= commandPassed;
+        emit({
+          phase: 'native-command-transport',
+          name: command.name,
+          ...result,
+          passed: commandPassed,
+        });
+      }
+      if (!passed) throw new Error('Native command output or exit status was not preserved.');
+    });
+  } catch (error) {
+    uncertain = hasUncertainTermination(error);
+    throw error;
+  } finally {
+    if (!uncertain) await workspace.cleanup();
+  }
+}
+
 async function main(): Promise<void> {
   const { positionals, values } = parseArgs({
     allowPositionals: true,
@@ -412,6 +498,7 @@ async function main(): Promise<void> {
         modelInvoked: false,
       });
     });
+    if (process.platform === 'linux') await verifyCommandTransport(codexPath, home);
     let nativeProbeInvocations = 0;
     const doctor = await new CodexSandbox({
       home,
