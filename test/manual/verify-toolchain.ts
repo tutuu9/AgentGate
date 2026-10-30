@@ -119,8 +119,9 @@ async function runCheck(codexPath: string, home: string, workspace: string, name
   let uncertain = false;
   try {
     const command = await resolveCommand('npm', ['run', name], session.env, workspace);
+    emit({ phase: 'resolved-check', name, command: command.command, modelInvoked: false });
     // Match the production check launch: resolve externally, then change cwd inside the sandbox.
-    const trampoline = `const {spawn}=require('node:child_process');const [cwd,cmd,...args]=process.argv.slice(1);process.chdir(cwd);const p=spawn(cmd,args,{shell:false,stdio:'inherit',windowsHide:true});p.on('error',()=>process.exit(127));p.on('exit',(code)=>process.exit(code??1));`;
+    const trampoline = `const {spawn}=require('node:child_process');const [cwd,cmd,...args]=process.argv.slice(1);process.chdir(cwd);const p=spawn(cmd,args,{shell:false,stdio:'inherit',windowsHide:true});p.on('error',error=>{require('node:fs').writeSync(2,JSON.stringify({phase:'toolchain-spawn-failure',code:typeof error.code==='string'?error.code:null})+'\\n');process.exit(127)});p.on('exit',(code)=>process.exit(code??1));`;
     return await execute({
       command: session.codexExecutable ?? codexPath,
       linuxPipeTransport: true,
