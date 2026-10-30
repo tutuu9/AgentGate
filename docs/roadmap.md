@@ -15,9 +15,9 @@ The current package is `0.1.0-dev.0`, an implementation preview. The first stabl
 
 The source implements the first workflow layers and their test seams. Milestones are not declared accepted until their evidence is entered in [acceptance.md](acceptance.md). Do not turn this table into fabricated completed GitHub Issues or release history.
 
-Open tracking Issues:
+Tracking Issues:
 
-- [Native Windows/Linux sandbox acceptance](https://github.com/tutuu9/AgentGate/issues/1) and [real workflow/recovery acceptance](https://github.com/tutuu9/AgentGate/issues/2) belong to [v0.1 CLI acceptance](https://github.com/tutuu9/AgentGate/milestone/1).
+- [Native Windows/Linux sandbox acceptance](https://github.com/tutuu9/AgentGate/issues/1) remains open. [Real workflow/recovery acceptance](https://github.com/tutuu9/AgentGate/issues/2) is completed for the recorded Windows MXC environment. The [v0.1 CLI acceptance milestone](https://github.com/tutuu9/AgentGate/milestone/1) remains open until Linux acceptance is established.
 - [Local web interface](https://github.com/tutuu9/AgentGate/issues/3) belongs to [v0.2](https://github.com/tutuu9/AgentGate/milestone/2).
 - [Claude Code adapter](https://github.com/tutuu9/AgentGate/issues/4) belongs to [v0.3](https://github.com/tutuu9/AgentGate/milestone/3).
 

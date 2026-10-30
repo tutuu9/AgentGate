@@ -80,7 +80,7 @@ Linux Codex re-executes its native binary after establishing the restricted file
 
 Linux sandbox commands use a fixed Bash transport to provide real POSIX pipes for stdin, stdout, and stderr. Node's usual subprocess transport uses Unix sockets; restricted Codex seccomp prevents the socket inspection that Node needs to identify its standard streams, causing silent output loss. The transport passes executable paths and arguments as positional data, suppresses Bash startup hooks, drains both output relays, and preserves the command's exit code. It requires `/bin/bash` and `/usr/bin/cat`; missing helpers fail closed. Cancellation and output limits still apply to the owned process group. A descendant retaining an output descriptor can delay completion until the timeout.
 
-This transport does not replace pipes created later by Node processes inside the sandbox. Captured output from nested Node processes remains a separate Linux compatibility concern. Filesystem/network isolation and general Node toolchain acceptance must be recorded separately; see the measured limitations in [acceptance.md](acceptance.md).
+This transport does not replace pipes created later by Node processes inside the sandbox. Captured input/output of nested Node processes remains a separate Linux compatibility concern. The native CI job records filesystem/network observations separately and requires compatible captured Node streams before its final MVP gate can pass; see the measured limitations in [acceptance.md](acceptance.md).
 
 Native isolation and its limitations require real acceptance evidence. Mocked subprocess responses, generated configuration, and prompts alone cannot prove that an operating-system boundary is enforced.
 

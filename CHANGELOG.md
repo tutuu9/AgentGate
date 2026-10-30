@@ -28,4 +28,4 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Status
 
-- Package version `0.1.0-dev.0` is an implementation preview. Windows MXC isolation and a real Issue-to-draft-PR run passed; Linux and broader recovery acceptance remain open. No stable release or public npm publication is claimed.
+- Package version `0.1.0-dev.0` is an implementation preview. Windows MXC isolation, real Issue-to-draft-PR runs, and controlled workflow recovery passed; Linux acceptance remains open. No stable release or public npm publication is claimed.
