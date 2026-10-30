@@ -44,3 +44,5 @@ jobs:
         run: node test/manual/verify-isolation.ts "$AGENTGATE_CODEX_PATH"
       - name: Verify offline Node and TypeScript checks without a model
         run: node test/manual/verify-toolchain.ts "$AGENTGATE_CODEX_PATH"
+      - name: Verify real process cancellation and stale-lock refusal
+        run: node test/manual/verify-lock-recovery.ts

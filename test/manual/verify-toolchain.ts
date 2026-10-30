@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import {
   cp,
   lstat,
@@ -7,13 +8,15 @@ import {
   readFile,
   readlink,
   realpath,
+  unlink,
   writeFile,
 } from 'node:fs/promises';
 import { arch, platform, release, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { CODEX_VERSION, createSandboxSession } from '../../src/adapters/sandbox.ts';
-import { execute, resolveCommand } from '../../src/adapters/process.ts';
+import { execute, ProcessError, resolveCommand } from '../../src/adapters/process.ts';
 import { hasUncertainTermination } from '../../src/core/errors.ts';
 import { cleanTerminal, redact } from '../../src/core/safety.ts';
 import { FileRunStore } from '../../src/core/store.ts';
@@ -173,6 +176,113 @@ async function verifyVersion(codexPath: string, home: string): Promise<void> {
   }
 }
 
+async function verifyCancellation(
+  codexPath: string,
+  home: string,
+  workspace: string,
+): Promise<void> {
+  const session = await createSandboxSession(home, workspace, true);
+  const nonce = randomUUID();
+  const heartbeat = join(workspace, `cancellation-${nonce}.json`);
+  const child = `const fs=require('node:fs');const [path,nonce]=process.argv.slice(1);let counter=0;
+setInterval(()=>{counter++;fs.writeFileSync(path,JSON.stringify({nonce,counter}),{flag:counter===1?'wx':'w'})},25);
+setTimeout(()=>process.exit(0),30000);`;
+  const parent = `const {spawn}=require('node:child_process');
+const [path,nonce,script]=process.argv.slice(1);
+spawn(process.execPath,['-e',script,path,nonce],{shell:false,windowsHide:true,stdio:'inherit'});
+setTimeout(()=>process.exit(0),30000);`;
+  const cancellation = new AbortController();
+  const started = Date.now();
+  let uncertain = false;
+  const execution = execute({
+    command: codexPath,
+    args: [
+      ...session.configArgs,
+      'sandbox',
+      '--include-managed-config',
+      '-P',
+      session.profile,
+      '-C',
+      session.launcher,
+      '--',
+      process.execPath,
+      '-e',
+      parent,
+      heartbeat,
+      nonce,
+      child,
+    ],
+    cwd: session.launcher,
+    env: session.env,
+    signal: AbortSignal.any([abort.signal, cancellation.signal]),
+    timeoutMs: 25_000,
+    maxOutputBytes: 8192,
+  }).then(
+    (result) => ({ result }),
+    (error: unknown) => ({ error }),
+  );
+  const stop = async () => {
+    cancellation.abort();
+    const outcome = await execution;
+    if ('error' in outcome && hasUncertainTermination(outcome.error)) {
+      uncertain = true;
+      throw outcome.error;
+    }
+    return outcome;
+  };
+  try {
+    let ready = false;
+    while (Date.now() - started < 10_000) {
+      abort.signal.throwIfAborted();
+      try {
+        const value: unknown = JSON.parse(await readFile(heartbeat, 'utf8'));
+        ready =
+          typeof value === 'object' &&
+          value !== null &&
+          'nonce' in value &&
+          value.nonce === nonce &&
+          'counter' in value &&
+          typeof value.counter === 'number' &&
+          Number.isSafeInteger(value.counter) &&
+          value.counter >= 3;
+      } catch (error) {
+        if (
+          !(error instanceof SyntaxError) &&
+          !(error instanceof Error && 'code' in error && error.code === 'ENOENT')
+        )
+          throw error;
+      }
+      if (ready) break;
+      await delay(25, undefined, { signal: abort.signal });
+    }
+    assert.ok(ready, 'Native descendant heartbeat did not start.');
+    const outcome = await stop();
+    assert.ok('error' in outcome && outcome.error instanceof ProcessError);
+    assert.equal(outcome.error.kind, 'aborted');
+    const stoppedHeartbeat = await readFile(heartbeat, 'utf8');
+    await delay(750, undefined, { signal: abort.signal });
+    if ((await readFile(heartbeat, 'utf8')) !== stoppedHeartbeat)
+      throw new ProcessError('termination', 'Native descendant kept writing after cancellation.');
+    assert.ok(Date.now() - started < 20_000, 'Observation reached the safety self-exit window.');
+    // No sandbox PID is treated as a host PID; native execution closed and writes stopped.
+    await unlink(heartbeat);
+    emit({
+      phase: 'native-cancellation',
+      executionClosedAfterAbort: true,
+      descendantHeartbeatStopped: true,
+      observedBeforeSafetyExit: true,
+      hostPidAssumed: false,
+      modelInvoked: false,
+    });
+  } catch (error) {
+    uncertain = hasUncertainTermination(error);
+    throw error;
+  } finally {
+    await stop();
+    if (!uncertain) await session.cleanup();
+  }
+}
+
 async function main(): Promise<void> {
   if (process.versions.node.split('.')[0] !== '24') throw new Error('Node.js 24 is required.');
   if (process.argv.length !== 3 || !isAbsolute(process.argv[2]!))
@@ -253,6 +363,7 @@ async function main(): Promise<void> {
         if (!uncertain) await writeFile(path, failure.restore);
       }
     }
+    await verifyCancellation(codexPath, home, workspace);
     emit({ result: 'passed', modelInvoked: false, authenticatedWorkflow: false });
   } catch (error) {
     uncertain = hasUncertainTermination(error);
