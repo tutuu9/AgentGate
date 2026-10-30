@@ -1,9 +1,136 @@
 # AgentGate
 
-A local CLI for human-approved GitHub Issue-to-PR workflows with coding agents.
+A local TypeScript CLI that takes a selected GitHub Issue through an approved plan, isolated coding work, checks, review, and a separately approved pull request.
 
-**Status: implementation in progress. Not a released or verified sandbox product.**
+**Status: implementation preview (`0.1.0-dev.0`). No stable release has been declared. Real Codex sandbox and GitHub workflow acceptance is still required.** See the [acceptance record](docs/acceptance.md) for evidence and outstanding checks. Mocked adapter tests do not establish real isolation.
 
-The first version targets Node.js/TypeScript repositories on Windows and Linux using Codex CLI, Git worktrees and GitHub CLI. Plans and publication require separate human approvals. Merge and deployment stay with the human.
+## The workflow
 
-See [contributor instructions](AGENTS.md). Licensed under [MIT](LICENSE).
+1. Register a local clone and approve its mandatory check commands.
+2. Select an Issue belonging to that repository.
+3. Review the plan, base commit, allowed paths, and checks; approve it or ask for a revision.
+4. Prepare dependencies yourself in the separate Git worktree.
+5. Let Codex implement the plan, then run the approved checks offline.
+6. Review the result with a separate read-only Codex invocation. A failed check or blocking review permits one repair attempt within the same scope.
+7. Inspect the diff, check output, review, branch, and exact candidate commit; separately approve push and draft PR creation.
+8. Decide yourself whether to mark the PR ready, merge, or deploy.
+
+If draft PRs are unavailable, AgentGate asks again before creating an ordinary PR. The approved branch may already have been pushed at that point. Refusing publication preserves local work.
+
+## Requirements
+
+- Node.js **24** and npm; Git; GitHub CLI (`gh`) authenticated to your own GitHub account.
+- A local repository with an `origin` on `github.com` and permission to push a branch and create a PR. Public and private repositories are supported by the workflow; GitHub account and organization policies still apply.
+- **Codex CLI 0.154.0**, the currently pinned adapter contract, with ChatGPT authentication in a separate AgentGate profile. Other versions fail the compatibility check until explicitly validated.
+- Native Windows or Linux with the required Codex sandbox available. The Windows adapter requests the legacy `elevated` sandbox; its native setup may require administrator approval. AgentGate does not weaken sandbox policy when setup is unavailable.
+- Dependencies and check tools that can run offline. The preview targets Node.js/TypeScript repositories and one active run per AgentGate state directory.
+
+macOS, GitHub Enterprise hosts, cross-repository forks, hosted workers, webhooks, web UI, and Claude Code are not implemented in this preview.
+
+## Install from source
+
+No published npm version is assumed. From a trusted checkout:
+
+```sh
+git clone https://github.com/tutuu9/AgentGate.git
+cd AgentGate
+npm ci
+npm run check
+npm link
+agentgate --help
+```
+
+`npm run check` includes the build. Alternatively, run `npm run build` and use `node dist/cli/main.js --help` without a global link. `npm pack` creates an installable local tarball; this is not a public release or registry publication.
+
+## Configure authentication and state
+
+State defaults to `~/.agentgate`. Keep it outside target repositories. `--home <path>` overrides `AGENTGATE_HOME`, which overrides that default. The CLI reads process environment variables; it does **not** load `.env` files. See [.env.example](.env.example) for optional executable paths.
+
+On Windows, configure native executables rather than `.cmd` or `.bat` launchers. AgentGate resolves npm through its JavaScript entry point; other batch wrappers are unsupported. If Codex or `gh` is not available as a native executable on `PATH`, set its explicit executable path using the variables in `.env.example`.
+
+Use your existing native GitHub CLI login:
+
+```sh
+gh auth status
+```
+
+If needed, authenticate through `gh auth login` yourself. AgentGate does not create or store its own GitHub token. The existing `gh` login may have wider repository permissions than the profile you select in AgentGate.
+
+Sign in to a dedicated Codex profile through the native login flow. Do not copy authentication files or tokens from another profile. For the default state home:
+
+```powershell
+# PowerShell
+$env:CODEX_HOME = Join-Path $HOME '.agentgate/codex'
+codex login
+```
+
+```sh
+# Linux shell
+CODEX_HOME="$HOME/.agentgate/codex" codex login
+```
+
+For a custom state home, use its `codex` subdirectory instead. Select ChatGPT authentication. AgentGate refuses API-key authentication and has no paid API fallback. Existing subscription limits still apply; AgentGate does not make those limits unlimited or purchase credits.
+
+On Windows, complete native sandbox setup separately in an interactive `codex` session using the same `CODEX_HOME`. Follow the setup flow offered by the installed CLI. The pinned 0.154.0 CLI does not provide a `codex sandbox setup` subcommand. Current [OpenAI documentation](https://learn.chatgpt.com/docs/developer-commands#setup-default-sandbox) describes `/setup-default-sandbox` when the interactive CLI is using its degraded Windows sandbox; that slash-command flow has not yet been exercised in this project's acceptance record. If native setup cannot complete, AgentGate remains blocked.
+
+Run the preflight before using a real repository:
+
+```sh
+agentgate doctor
+```
+
+Every mandatory check must report `PASS`. `BLOCKED` means the requirement is unavailable or unverified. The doctor checks the CLI contract and authentication and attempts real filesystem/network probes. It makes a diagnostic TCP connection to `1.1.1.1:443` from the controller and tests denied connections from the sandbox; a missing baseline is blocked, not counted as isolation evidence. It does not invoke a model.
+
+## Run an Issue
+
+Replace the example paths, repository owner, and Issue number with a repository you control:
+
+```sh
+agentgate repo add /absolute/path/to/my-repository --name example
+agentgate run https://github.com/YOUR-OWNER/YOUR-REPO/issues/123 --repo example
+```
+
+Use a native Windows path when running in PowerShell. Registration suggests existing `lint`, `typecheck`, `test`, and `build` npm scripts and asks you to confirm the exact commands. To supply an explicit list, create a JSON file and pass `--checks /path/to/checks.json`:
+
+```json
+[
+  { "name": "typecheck", "command": "npm", "args": ["run", "typecheck"], "timeoutMs": 600000 },
+  { "name": "test", "command": "npm", "args": ["test"], "timeoutMs": 600000 }
+]
+```
+
+Commands and arguments are separate values, not shell snippets. Every listed check is mandatory; do not omit a required check just to obtain a green result. Registration and approvals require an interactive terminal and default to declining; there is no `--yes` bypass.
+
+After plan approval, the CLI shows the worktree and pauses for dependency preparation. Review dependency scripts before running an installer there, then confirm that the approved checks work offline. AgentGate does not install packages automatically or supply production secrets. Changes outside the approved path scope block progress rather than silently expanding the plan.
+
+## Inspect, resume, and clean up
+
+| Command                            | Purpose                                                                                                    |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `agentgate status`                 | List saved runs.                                                                                           |
+| `agentgate status <run-id> --json` | Read a saved run.                                                                                          |
+| `agentgate inspect <run-id>`       | Show saved details and the current diff when available.                                                    |
+| `agentgate resume <run-id>`        | Revalidate prerequisites and continue from its saved checkpoint.                                           |
+| `agentgate cleanup <run-id>`       | Confirm cleanup of a completed published run's worktree and local reports; preserve the Git branch and PR. |
+
+Ctrl+C cancels active work. Failed, cancelled, blocked, or crash-interrupted work is preserved. A crash may leave an in-progress status; it is not evidence of completion. Resume rechecks the stored repository/check configuration and source snapshot. Changed files invalidate their previous checks, review, and publication approval. A changed check configuration requires renewed plan approval. Changed repository identity or base branch requires a new run.
+
+A crashed controller can leave its run lock while an orphan worker is still active. AgentGate does not reclaim that lock merely because its PID is gone. Verify that the entire worker/check process tree has stopped, or restart the machine; back up the state and remove only the exact stale `run.lock` after confirming no AgentGate process remains. Keep every run record and worktree. See [recovery details](docs/architecture.md#state-and-recovery).
+
+The default active execution budget is 60 minutes per run, excluding time spent waiting for you. An agent invocation is limited to 30 minutes; each check is limited to at most 10 minutes. An exhausted active budget requires a new explicitly scoped run. There is one automatic repair attempt, shared between check failures and blocking review findings.
+
+Exit code `2` reports blocked doctor checks or a saved failed/blocked/cancelled run; `1` reports an invocation error. Exit code `0` can also mean that work is waiting for your approval or preparation: inspect the printed status before treating a command as completed.
+
+## Boundaries and limitations
+
+Git worktrees separate changes; they are not a security sandbox. Agent and check subprocesses use the native Codex permission boundary. GitHub credentials remain in the controller, and agents do not receive controller credential environment variables. Live verification is still required for each supported environment; see [security](SECURITY.md).
+
+The controller records validated structured results and redacted diagnostics rather than raw model reasoning. Redaction is a best-effort safeguard, not proof that arbitrary output contains no secrets. Keep authentication caches, production credentials, and unrelated private files out of the worktree. Local state can contain private Issue text and code-related reports.
+
+The globally installed `clean-code` skill is a contributor convenience, not a runtime dependency. Project conventions live in [AGENTS.md](AGENTS.md), which [CLAUDE.md](CLAUDE.md) imports.
+
+## Development
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md), [architecture](docs/architecture.md), [decisions](docs/decisions.md), and the [roadmap](docs/roadmap.md). Tests use fake providers and disposable repositories; they must not use real model credentials or paid APIs. CI is configured for Windows and Ubuntu with Node.js 24.
+
+Licensed under [MIT](LICENSE).

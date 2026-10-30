@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a focused workflow improvement with acceptance criteria.
+title: 'feat: '
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User and problem
+      description: Describe the concrete workflow and the manual step or limitation to improve.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Proposed outcome and acceptance criteria
+      description: State what should work, what stays outside scope, and how the behavior can be verified.
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Permissions, costs, and alternatives
+      description: Identify any new credentials, network access, billing, persistence, or approval requirements. Include simpler alternatives considered.

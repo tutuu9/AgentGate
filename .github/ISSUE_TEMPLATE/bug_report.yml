@@ -1,0 +1,34 @@
+name: Bug report
+description: Report a reproducible correctness or recovery problem.
+title: 'bug: '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For vulnerabilities, follow SECURITY.md. Do not include credentials, raw model reasoning, private Issue bodies, or production logs.
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should happen, including the approval or safety boundary involved?
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: Include a minimal reproduction using fake data and sanitized output.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Environment
+      description: AgentGate commit/version, operating system, Node.js, Git, gh, and Codex versions.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Checks and evidence
+      description: What passed, failed, was blocked, or was unavailable? Distinguish fake fixtures from live sandbox observations.
