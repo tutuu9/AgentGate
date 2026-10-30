@@ -19,6 +19,7 @@ import test from 'node:test';
 import {
   CODEX_VERSION,
   CodexSandbox,
+  createCheckSandboxSession,
   createSandboxSession,
   DISABLED_FEATURES,
   isolatedEnvironment,
@@ -220,6 +221,132 @@ test('session policy separates controller state and grants only the chosen workt
   }
 });
 
+async function npmFixture(prefix: string) {
+  const directory = join(prefix, 'node_modules', 'npm');
+  const executable = join(directory, 'bin', 'npm-cli.js');
+  await mkdir(join(directory, 'bin'), { recursive: true });
+  // Policy-only fixture: no real npm or Codex execution occurs in these tests.
+  await writeFile(executable, '#!/usr/bin/env node\n', { mode: 0o700 });
+  const metadata = join(directory, 'package.json');
+  await writeFile(metadata, JSON.stringify({ name: 'npm', bin: { npm: 'bin/npm-cli.js' } }));
+  return { directory, executable, metadata };
+}
+
+test(
+  'Linux check sessions grant only the selected npm package and pin Node and its entry point',
+  { skip: process.platform !== 'linux' },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-npm-runtime-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const home = join(directory, 'home');
+    const worktree = join(directory, 'checkout');
+    await mkdir(worktree);
+    const npm = await npmFixture(join(directory, 'installation'));
+    const alias = join(directory, 'npm');
+    await symlink(npm.executable, alias);
+    const args = ['run', 'test', '--', '$(literal); never-shell'];
+    const session = await createCheckSandboxSession(
+      home,
+      worktree,
+      { command: alias, args },
+      process.execPath,
+    );
+    try {
+      assert.deepEqual(session.checkCommand, {
+        command: process.execPath,
+        args: [await realpath(npm.executable), ...args],
+      });
+      const filesystem = session.configArgs.find((argument) => argument.includes('.filesystem='))!;
+      assert.ok(filesystem.includes(`${JSON.stringify(await realpath(npm.directory))}="read"`));
+      for (const broad of [directory, join(directory, 'installation'), home, join(home, 'codex')])
+        assert.ok(!filesystem.includes(`${JSON.stringify(broad)}="read"`));
+      assert.ok(filesystem.includes('":root"="deny"'));
+      assert.ok(filesystem.includes(`${JSON.stringify(join(home, 'codex'))}="deny"`));
+    } finally {
+      await session.cleanup();
+    }
+    const ordinary = await createSandboxSession(home, worktree, true, process.execPath);
+    try {
+      assert.equal(ordinary.npmExecutable, undefined);
+      assert.ok(!ordinary.configArgs.some((argument) => argument.includes(npm.directory)));
+    } finally {
+      await ordinary.cleanup();
+    }
+  },
+);
+
+test(
+  'Linux npm runtime validation rejects mismatched metadata and untrusted package paths',
+  { skip: process.platform !== 'linux' },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-npm-denial-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const home = join(directory, 'home');
+    const worktree = join(directory, 'checkout');
+    await mkdir(home);
+    await mkdir(worktree);
+    const npm = await npmFixture(join(directory, 'installed'));
+    const prepare = (command: string) =>
+      createCheckSandboxSession(home, worktree, { command, args: ['--version'] }, process.execPath);
+    for (const metadata of [
+      { name: 'unrelated', bin: { npm: 'bin/npm-cli.js' } },
+      { name: 'npm', bin: { npm: '../other.js' } },
+      { name: 'npm', bin: { npm: 'bin/other.js' } },
+    ]) {
+      await writeFile(npm.metadata, JSON.stringify(metadata));
+      await assert.rejects(prepare(npm.executable));
+    }
+    await writeFile(npm.metadata, JSON.stringify({ name: 'npm', bin: { npm: 'bin/npm-cli.js' } }));
+    for (const root of [home, worktree]) {
+      const untrusted = await npmFixture(root);
+      await assert.rejects(
+        prepare(untrusted.executable),
+        /outside the worktree and AgentGate state/,
+      );
+      const outwardAlias = join(root, 'npm');
+      await symlink(npm.executable, outwardAlias);
+      await assert.rejects(prepare(outwardAlias), /outside the worktree and AgentGate state/);
+      const inwardAlias = join(directory, `${root === home ? 'state' : 'checkout'}-alias`);
+      await symlink(untrusted.executable, inwardAlias);
+      await assert.rejects(prepare(inwardAlias), /outside the worktree and AgentGate state/);
+    }
+    const fakePrefix = join(directory, 'fake-prefix');
+    await mkdir(join(fakePrefix, 'bin'), { recursive: true });
+    const broadEntry = join(fakePrefix, 'bin', 'npm-cli.js');
+    await writeFile(broadEntry, '#!/usr/bin/env node\n', { mode: 0o700 });
+    await writeFile(
+      join(fakePrefix, 'package.json'),
+      JSON.stringify({ name: 'npm', bin: { npm: 'bin/npm-cli.js' } }),
+    );
+    await assert.rejects(prepare(broadEntry), /installed node_modules\/npm package/);
+    const nestedHome = join(npm.directory, 'state');
+    await assert.rejects(
+      createCheckSandboxSession(
+        nestedHome,
+        worktree,
+        { command: npm.executable, args: [] },
+        process.execPath,
+      ),
+      /outside the worktree and AgentGate state/,
+    );
+    const nestedWorktree = join(npm.directory, 'checkout');
+    await mkdir(nestedWorktree);
+    await assert.rejects(
+      createCheckSandboxSession(
+        home,
+        nestedWorktree,
+        { command: npm.executable, args: [] },
+        process.execPath,
+      ),
+      /outside the worktree and AgentGate state/,
+    );
+    await rename(npm.metadata, `${npm.metadata}.real`);
+    await symlink(`${npm.metadata}.real`, npm.metadata);
+    await assert.rejects(prepare(npm.executable), /bounded regular file/);
+    assert.deepEqual(await readdir(join(home, 'runtime')), []);
+  },
+);
+
 test('sessions reject redirected runtime directories and worktrees before granting access', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'agentgate-linked-policy-'));
   const home = join(directory, 'home');
@@ -349,6 +476,7 @@ async function syntheticProbe(
     beforeReady?: (paths: SyntheticProbePaths) => Promise<void>;
     afterProceed?: (paths: SyntheticProbePaths) => Promise<void>;
     missingWorkspaceWrite?: boolean;
+    redirectedReport?: boolean;
   } = {},
 ) {
   const script = options.args[options.args.indexOf('-e') + 1]!;
@@ -361,7 +489,8 @@ async function syntheticProbe(
   await writeFile(`${paths.ready}.tmp`, JSON.stringify({ nonce: paths.nonce, observation }), {
     flag: 'wx',
   });
-  await rename(`${paths.ready}.tmp`, paths.ready);
+  if (effects.redirectedReport) await symlink(`${paths.ready}.tmp`, paths.ready);
+  else await rename(`${paths.ready}.tmp`, paths.ready);
   const deadline = Date.now() + 2000;
   for (;;) {
     options.signal?.throwIfAborted();
@@ -716,6 +845,7 @@ test('doctor verifies host effects before accepting synthetic private namespace 
     'missing-workspace-write',
     'missing-handshake',
     'changed-final-report',
+    ...(process.platform === 'linux' ? ['redirected-report' as const] : []),
   ] as const;
   for (const scenario of cases) {
     const prerequisites = prerequisiteExecutor();
@@ -741,6 +871,7 @@ test('doctor verifies host effects before accepting synthetic private namespace 
           return { exitCode: 0, stdout: JSON.stringify(observation), stderr: '', durationMs: 1 };
         const result = await syntheticProbe(options, observation, {
           missingWorkspaceWrite: scenario === 'missing-workspace-write',
+          redirectedReport: scenario === 'redirected-report',
           beforeReady: async (paths) => {
             if (scenario === 'outside-during') await writeFile(paths.outside, paths.nonce);
             if (scenario === 'canary-content') await writeFile(paths.sentinel, 'changed');

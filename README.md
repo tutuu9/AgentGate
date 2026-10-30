@@ -31,6 +31,8 @@ Linux needs distribution-provided `bubblewrap` and permission to create its sand
 
 Linux sandbox commands also require `/bin/bash` and `/usr/bin/cat` for their fixed pipe transport. Linux acceptance remains incomplete: captured stdin/stdout/stderr of nested Node processes is incompatible with the pinned sandbox's network syscall restrictions. The live fixture reported `EPERM`, missing input, and discarded console output. Passing ordinary behavior tests or the outer command's stream checks does not resolve this compatibility limitation.
 
+Controller npm checks support the standard `node_modules/npm` installation layout. AgentGate validates that package and runs its selected entry point with the controller's Node.js 24. Only the npm package receives additional read access for those checks; an unsupported layout or a runtime inside the worktree/state directory is rejected.
+
 macOS, GitHub Enterprise hosts, cross-repository forks, hosted workers, webhooks, web UI, and Claude Code are not implemented in this preview.
 
 ## Install from source

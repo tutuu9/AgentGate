@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createConnection, createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { hasUncertainTermination } from '../core/errors.ts';
@@ -46,6 +46,8 @@ export interface CodexOptions {
 export interface SandboxSession {
   /** Canonical Linux executable selected for this policy and its matching invocation. */
   codexExecutable?: string;
+  /** Validated npm entry point available only to explicitly prepared controller check sessions. */
+  npmExecutable?: string;
   launcher: string;
   profile: string;
   env: NodeJS.ProcessEnv;
@@ -145,6 +147,7 @@ export async function createSandboxSession(
   worktree?: string,
   writable = false,
   codexExecutable?: string,
+  npmExecutable?: string,
 ): Promise<SandboxSession> {
   const root = await canonicalDirectory(resolve(home), true);
   const runtime = join(root, 'runtime');
@@ -156,6 +159,10 @@ export async function createSandboxSession(
   const runtimeExecutable =
     process.platform === 'linux' && codexExecutable
       ? await resolveSandboxExecutable(codexExecutable, root, target)
+      : undefined;
+  const npmRuntime =
+    process.platform === 'linux' && npmExecutable
+      ? await resolveNpmRuntime(npmExecutable, root, target)
       : undefined;
   const launcher = await mkdtemp(join(runtime, 'launch-'));
   const temporary = join(launcher, 'tmp');
@@ -174,6 +181,7 @@ export async function createSandboxSession(
   // Linux Codex re-executes itself after constructing the restricted filesystem view.
   // Grant only the controller-selected executable, never its installation directory.
   if (runtimeExecutable) filesystem[runtimeExecutable] = 'read';
+  if (npmRuntime) filesystem[npmRuntime.directory] = 'read';
   if (target) {
     filesystem[target] = writable ? 'write' : 'read';
     for (const protectedName of ['.git', '.agents', '.codex', '.aws'])
@@ -198,6 +206,7 @@ export async function createSandboxSession(
   if (process.platform === 'win32') configArgs.push(...config('windows.sandbox', 'mxc'));
   return {
     codexExecutable: runtimeExecutable,
+    npmExecutable: npmRuntime?.executable,
     launcher,
     profile,
     env,
@@ -211,6 +220,63 @@ export async function createSandboxSession(
       await rm(launcher, { recursive: true, force: true });
     },
   };
+}
+
+/** Resolve approved check commands once; Linux npm uses the pinned controller Node runtime. */
+export async function createCheckSandboxSession(
+  home: string,
+  worktree: string,
+  spec: Pick<CheckSpec, 'command' | 'args'>,
+  codexExecutable?: string,
+): Promise<SandboxSession & { checkCommand: { command: string; args: string[] } }> {
+  const selected = await resolveCommand(
+    spec.command,
+    spec.args,
+    isolatedEnvironment(home, join(home, 'runtime')),
+    worktree,
+  );
+  const canonical =
+    process.platform === 'linux' ? await realpath(selected.command) : selected.command;
+  const npmExecutable =
+    process.platform === 'linux' && basename(canonical) === 'npm-cli.js'
+      ? selected.command
+      : undefined;
+  const session = await createSandboxSession(home, worktree, true, codexExecutable, npmExecutable);
+  return {
+    ...session,
+    checkCommand: session.npmExecutable
+      ? { command: process.execPath, args: [session.npmExecutable, ...selected.args] }
+      : { command: canonical, args: selected.args },
+  };
+}
+
+async function resolveNpmRuntime(executable: string, home: string, worktree?: string) {
+  const canonical = await realpath(executable);
+  if (basename(canonical) !== 'npm-cli.js' || basename(dirname(canonical)) !== 'bin')
+    throw new Error('The selected npm executable does not use the supported package layout.');
+  const directory = dirname(dirname(canonical));
+  if (basename(directory) !== 'npm' || basename(dirname(directory)) !== 'node_modules')
+    throw new Error('The npm runtime must be its installed node_modules/npm package.');
+  const within = (parent: string, child: string) => {
+    const path = relative(parent, child);
+    return !path || (!isAbsolute(path) && path !== '..' && !path.startsWith(`..${sep}`));
+  };
+  const candidates = [resolve(executable), canonical, directory];
+  for (const denied of [home, ...(worktree ? [worktree] : [])]) {
+    if (candidates.some((candidate) => within(denied, candidate)) || within(directory, denied))
+      throw new Error('The npm runtime must be outside the worktree and AgentGate state.');
+  }
+  if (within(directory, homedir())) throw new Error('The npm runtime cannot grant the user home.');
+  const metadataPath = join(directory, 'package.json');
+  const metadataFile = await lstat(metadataPath);
+  if (!metadataFile.isFile() || metadataFile.isSymbolicLink() || metadataFile.size > 1024 * 1024)
+    throw new Error('The npm runtime metadata is not a bounded regular file.');
+  const metadata = z
+    .object({ name: z.literal('npm'), bin: z.object({ npm: z.string() }) })
+    .parse(JSON.parse(await readFile(metadataPath, 'utf8')));
+  if (resolve(directory, metadata.bin.npm) !== canonical || !(await lstat(canonical)).isFile())
+    throw new Error('The npm runtime metadata does not match its selected entry point.');
+  return { directory, executable: canonical };
 }
 
 async function resolveSandboxExecutable(
@@ -588,8 +654,9 @@ export class CodexSandbox implements SandboxRunner {
           return { result: outcome.result, hostVerified: false };
         }
         try {
-          if ((await lstat(paths.ready)).size > 128 * 1024)
-            throw new Error('Sandbox probe report exceeded its limit.');
+          const reportFile = await lstat(paths.ready);
+          if (!reportFile.isFile() || reportFile.isSymbolicLink() || reportFile.size > 128 * 1024)
+            throw new Error('Sandbox probe report must be a bounded regular file.');
           const ready = z
             .object({ nonce: z.literal(paths.nonce), observation: ProbeSchema })
             .parse(JSON.parse(await readFile(paths.ready, 'utf8')));
@@ -752,14 +819,14 @@ export class CodexSandbox implements SandboxRunner {
       throw new Error(
         `Sandbox blocked: ${blocked.map((check) => `${check.name}: ${check.detail}`).join(' ')}`,
       );
-    const session = await createSandboxSession(this.home, worktree, true, this.codexPath);
+    const session = await createCheckSandboxSession(this.home, worktree, spec, this.codexPath);
     let failed = false;
     let uncertain = false;
     try {
       signal?.throwIfAborted();
-      const command = await resolveCommand(spec.command, spec.args, session.env, worktree);
+      const command = session.checkCommand;
       // The fixed Node trampoline changes cwd without exposing the project to Codex config discovery.
-      const trampoline = `const {spawn}=require('node:child_process');const [cwd,cmd,...args]=process.argv.slice(1);process.chdir(cwd);const p=spawn(cmd,args,{shell:false,stdio:'inherit',windowsHide:true});p.on('error',()=>process.exit(127));p.on('exit',(code)=>process.exit(code??1));`;
+      const trampoline = `const {spawn}=require('node:child_process');const [cwd,cmd,...args]=process.argv.slice(1);process.chdir(cwd);const p=spawn(cmd,args,{shell:false,stdio:'inherit',windowsHide:true});p.on('error',error=>{require('node:fs').writeSync(2,JSON.stringify({code:typeof error.code==='string'?error.code:null})+'\\n');process.exit(127)});p.on('exit',(code)=>process.exit(code??1));`;
       const result = await this.executor({
         command: session.codexExecutable ?? this.codexPath,
         linuxPipeTransport: true,

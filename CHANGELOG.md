@@ -18,6 +18,8 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Fixed
 
+- Resolve controller npm checks once and grant Linux checks read access only to the validated npm runtime package.
+- Verify sandbox writes against live and post-exit host observations, including unchanged outside canaries and actual workspace writes.
 - Preserve Linux sandbox command output with real POSIX pipes while retaining the network syscall restrictions.
 - Permit Linux Codex to re-execute its trusted native binary with an exact-file read grant, pin invocation to that same file, and reject executables in the worktree or controller state.
 - Cancel interactive CLI work on the first Ctrl+C, including between approval prompts.

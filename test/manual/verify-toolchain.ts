@@ -15,8 +15,12 @@ import { arch, platform, release, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { CODEX_VERSION, createSandboxSession } from '../../src/adapters/sandbox.ts';
-import { execute, ProcessError, resolveCommand } from '../../src/adapters/process.ts';
+import {
+  CODEX_VERSION,
+  createCheckSandboxSession,
+  createSandboxSession,
+} from '../../src/adapters/sandbox.ts';
+import { execute, ProcessError } from '../../src/adapters/process.ts';
 import { hasUncertainTermination } from '../../src/core/errors.ts';
 import { cleanTerminal, redact } from '../../src/core/safety.ts';
 import { FileRunStore } from '../../src/core/store.ts';
@@ -115,11 +119,16 @@ export default tseslint.config(js.configs.recommended, ...tseslint.configs.recom
 }
 
 async function runCheck(codexPath: string, home: string, workspace: string, name: string) {
-  const session = await createSandboxSession(home, workspace, true, codexPath);
+  const session = await createCheckSandboxSession(
+    home,
+    workspace,
+    { command: 'npm', args: ['run', name] },
+    codexPath,
+  );
   let uncertain = false;
   try {
-    const command = await resolveCommand('npm', ['run', name], session.env, workspace);
-    emit({ phase: 'resolved-check', name, command: command.command, modelInvoked: false });
+    const command = session.checkCommand;
+    emit({ phase: 'resolved-check', name, ...command, modelInvoked: false });
     // Match the production check launch: resolve externally, then change cwd inside the sandbox.
     const trampoline = `const {spawn}=require('node:child_process');const [cwd,cmd,...args]=process.argv.slice(1);process.chdir(cwd);const p=spawn(cmd,args,{shell:false,stdio:'inherit',windowsHide:true});p.on('error',error=>{require('node:fs').writeSync(2,JSON.stringify({phase:'toolchain-spawn-failure',code:typeof error.code==='string'?error.code:null})+'\\n');process.exit(127)});p.on('exit',(code)=>process.exit(code??1));`;
     return await execute({
@@ -319,6 +328,7 @@ async function main(): Promise<void> {
       authenticatedWorkflow: false,
     });
     await prepareFixture(workspace);
+    await verifyCancellation(codexPath, home, workspace);
     for (const name of ['lint', 'typecheck', 'test', 'build']) {
       const result = await runCheck(codexPath, home, workspace, name);
       emit({ phase: 'check', name, ...result });
@@ -366,7 +376,6 @@ async function main(): Promise<void> {
         if (!uncertain) await writeFile(path, failure.restore);
       }
     }
-    await verifyCancellation(codexPath, home, workspace);
     emit({ result: 'passed', modelInvoked: false, authenticatedWorkflow: false });
   } catch (error) {
     uncertain = hasUncertainTermination(error);
