@@ -8,8 +8,10 @@ export class TerminalInteraction implements UserInteraction {
   private readonly reader = createInterface({ input: stdin, output: stdout });
   private readonly signal?: AbortSignal;
 
-  constructor(signal?: AbortSignal) {
+  constructor(signal?: AbortSignal, onInterrupt?: () => void) {
     this.signal = signal;
+    // Readline consumes Ctrl+C in terminal mode instead of raising process SIGINT.
+    if (onInterrupt) this.reader.on('SIGINT', onInterrupt);
   }
 
   show(text: string): void {

@@ -18,6 +18,7 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Fixed
 
+- Cancel interactive CLI work on the first Ctrl+C, including between approval prompts.
 - Preserve sandbox sessions and probe fixtures when process-tree termination cannot be verified, including errors nested in causes or aggregates.
 - Describe the approved objective in PR text after recovery instead of publishing an intermediate repair diagnostic as the final summary.
 - Support npm and nested Node script startup inside Windows MXC with fixed symlink-preservation flags while retaining default-deny filesystem permissions.

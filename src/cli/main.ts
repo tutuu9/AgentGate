@@ -158,7 +158,7 @@ export async function main(argv: string[]): Promise<number> {
       );
       return 0;
     }
-    const interaction = new TerminalInteraction(abort.signal);
+    const interaction = new TerminalInteraction(abort.signal, interrupt);
     ui = interaction;
     if (command === 'repo') {
       if (positionals[1] !== 'add') throw new Error('Use: agentgate repo add <path>');
