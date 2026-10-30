@@ -412,7 +412,52 @@ async function main(): Promise<void> {
         modelInvoked: false,
       });
     });
-    const doctor = await new CodexSandbox({ home, codexPath }).doctor(abort.signal);
+    let nativeProbeInvocations = 0;
+    const doctor = await new CodexSandbox({
+      home,
+      codexPath,
+      executor: async (options) => {
+        const nativeProbe = options.args.includes('sandbox') && !options.args.includes('--help');
+        if (nativeProbe) nativeProbeInvocations++;
+        try {
+          const result = await execute(options);
+          if (nativeProbe) {
+            let validJson = false;
+            try {
+              JSON.parse(result.stdout.trim());
+              validJson = true;
+            } catch {
+              // Only this helper's fixed, unauthenticated fixture output is inspected.
+            }
+            if (result.exitCode !== 0 || !validJson) {
+              const bounded = (value: string) =>
+                Buffer.from(cleanTerminal(redact(value)))
+                  .subarray(0, 8192)
+                  .toString('utf8');
+              emit({
+                phase: 'native-probe-diagnostic',
+                exitCode: result.exitCode,
+                validJson,
+                stdout: bounded(result.stdout),
+                stderr: bounded(result.stderr),
+                outputLimitBytesPerStream: 8192,
+                modelInvoked: false,
+              });
+            }
+          }
+          return result;
+        } catch (error) {
+          if (nativeProbe)
+            emit({
+              phase: 'native-probe-diagnostic',
+              errorName: error instanceof Error ? error.name : 'UnknownError',
+              error: error instanceof Error ? error.message.slice(0, 1024) : 'Native probe failed.',
+              modelInvoked: false,
+            });
+          throw error;
+        }
+      },
+    }).doctor(abort.signal);
     const requiredChecks = [
       'codex-version',
       'codex-integrations',
@@ -431,6 +476,7 @@ async function main(): Promise<void> {
       ) && doctor.length === requiredChecks.length + 1;
     emit({
       phase: 'doctor',
+      nativeProbeInvocations,
       checks: doctor,
       unauthenticated,
       isolationVerified,
