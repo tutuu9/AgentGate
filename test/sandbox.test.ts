@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, realpath, rm, symlink } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
@@ -38,6 +38,21 @@ test('isolated environments exclude credentials, shell options and proxies', () 
     'npm_config_registry',
   ])
     assert.equal(env[key], undefined);
+});
+
+test('Windows sandbox identity comes from the OS rather than caller environment', () => {
+  const env = isolatedEnvironment('/agentgate', '/temporary', {
+    USERNAME: 'Administrators',
+    username: 'untrusted-user',
+    USERDOMAIN: 'untrusted-domain',
+    GH_TOKEN: 'fake',
+    CODEX_API_KEY: 'fake',
+  });
+  assert.equal(env.USERNAME, process.platform === 'win32' ? userInfo().username : undefined);
+  assert.equal(env.username, undefined);
+  assert.equal(env.USERDOMAIN, undefined);
+  assert.equal(env.GH_TOKEN, undefined);
+  assert.equal(env.CODEX_API_KEY, undefined);
 });
 
 test('session policy separates controller state and grants only the chosen worktree', async () => {

@@ -15,6 +15,10 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 - Explicit model and reasoning-effort options for planning, implementation, and review during `run` and `resume`.
 - Behavior tests using fake providers and temporary repositories, plus Windows/Ubuntu CI configuration.
 
+### Fixed
+
+- Preserve the actual Windows username when refreshing the native Codex sandbox; ignore caller-supplied identity overrides while continuing to exclude credentials.
+
 ### Status
 
 - Package version `0.1.0-dev.0` is an implementation preview. No stable release, completed live sandbox acceptance, or public npm publication is claimed.

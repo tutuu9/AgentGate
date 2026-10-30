@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { createConnection, createServer } from 'node:net';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import {
@@ -87,7 +87,11 @@ export function isolatedEnvironment(
   }
   env.CODEX_HOME = join(resolve(home), 'codex');
   env.HOME = homedir();
-  if (process.platform === 'win32') env.USERPROFILE = homedir();
+  if (process.platform === 'win32') {
+    env.USERPROFILE = homedir();
+    // Codex 0.154.0 otherwise targets Administrators during native sandbox ACL refresh.
+    env.USERNAME = userInfo().username;
+  }
   env.TEMP = temporary;
   env.TMP = temporary;
   env.TMPDIR = temporary;
