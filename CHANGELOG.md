@@ -18,6 +18,7 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Fixed
 
+- Preserve Linux sandbox command output with real POSIX pipes while retaining the network syscall restrictions.
 - Permit Linux Codex to re-execute its trusted native binary with an exact-file read grant, pin invocation to that same file, and reject executables in the worktree or controller state.
 - Cancel interactive CLI work on the first Ctrl+C, including between approval prompts.
 - Preserve sandbox sessions and probe fixtures when process-tree termination cannot be verified, including errors nested in causes or aggregates.

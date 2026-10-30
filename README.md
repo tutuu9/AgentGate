@@ -29,6 +29,8 @@ If draft PRs are unavailable, AgentGate asks again before creating an ordinary P
 
 Linux needs distribution-provided `bubblewrap` and permission to create its sandbox namespaces. On Ubuntu 24.04, a missing distro `bwrap-userns-restrict` AppArmor profile can prevent startup; follow the [official Linux sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing#prerequisites). The native acceptance job checks namespace creation first and loads the packaged profile only when needed. It preserves the system-wide AppArmor setting and runs Codex as the ordinary runner user. An unavailable profile or failed native probe blocks acceptance.
 
+Linux sandbox commands also require `/bin/bash` and `/usr/bin/cat` for their fixed pipe transport. Linux acceptance remains incomplete: nested Node processes that capture stdout/stderr can silently lose that output under the pinned sandbox's network syscall restrictions. Passing ordinary behavior tests or the outer command's stream checks does not resolve this compatibility limitation.
+
 macOS, GitHub Enterprise hosts, cross-repository forks, hosted workers, webhooks, web UI, and Claude Code are not implemented in this preview.
 
 ## Install from source
