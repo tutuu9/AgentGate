@@ -52,6 +52,8 @@ State defaults to `~/.agentgate`. Keep it outside target repositories. `--home <
 
 On Windows, configure native executables rather than `.cmd` or `.bat` launchers. AgentGate resolves npm through its JavaScript entry point; other batch wrappers are unsupported. If Codex or `gh` is not available as a native executable on `PATH`, set its explicit executable path using the variables in `.env.example`.
 
+For a custom Linux Codex installation outside standard system runtime paths, set `AGENTGATE_CODEX_PATH` to its native executable. Linux grants that exact canonical file read access so Codex can re-execute itself inside the sandbox; it does not expose the installation directory. Keep it outside the target worktree and AgentGate state directory. A package-manager wrapper that launches another ungranted executable may fail preflight; select the native binary instead.
+
 Use your existing native GitHub CLI login:
 
 ```sh

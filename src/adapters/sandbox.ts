@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { createConnection, createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { hasUncertainTermination } from '../core/errors.ts';
 import {
@@ -141,6 +141,7 @@ export async function createSandboxSession(
   home: string,
   worktree?: string,
   writable = false,
+  codexExecutable?: string,
 ): Promise<SandboxSession> {
   const root = await canonicalDirectory(resolve(home), true);
   const runtime = join(root, 'runtime');
@@ -149,6 +150,10 @@ export async function createSandboxSession(
     if (process.platform !== 'win32') await chmod(owned, 0o700);
   }
   const target = worktree ? await canonicalDirectory(resolve(worktree)) : undefined;
+  const runtimeExecutable =
+    process.platform === 'linux' && codexExecutable
+      ? await resolveSandboxExecutable(codexExecutable, root, target)
+      : undefined;
   const launcher = await mkdtemp(join(runtime, 'launch-'));
   const temporary = join(launcher, 'tmp');
   await mkdir(temporary, { mode: 0o700 });
@@ -163,6 +168,9 @@ export async function createSandboxSession(
     [dirname(process.execPath)]: 'read',
     [join(root, 'codex')]: 'deny',
   };
+  // Linux Codex re-executes itself after constructing the restricted filesystem view.
+  // Grant only the controller-selected executable, never its installation directory.
+  if (runtimeExecutable) filesystem[runtimeExecutable] = 'read';
   if (target) {
     filesystem[target] = writable ? 'write' : 'read';
     for (const protectedName of ['.git', '.agents', '.codex', '.aws'])
@@ -199,6 +207,29 @@ export async function createSandboxSession(
       await rm(launcher, { recursive: true, force: true });
     },
   };
+}
+
+async function resolveSandboxExecutable(
+  command: string,
+  home: string,
+  worktree?: string,
+): Promise<string> {
+  const env = isolatedEnvironment(home, join(home, 'runtime'));
+  const selected = await resolveCommand(command, [], env, worktree ?? home);
+  const canonical = await realpath(selected.command);
+  const candidates = [canonical, selected.command];
+  if (isAbsolute(command)) candidates.push(resolve(command));
+  for (const directory of [home, ...(worktree ? [worktree] : [])]) {
+    if (
+      candidates.some((candidate) => {
+        const child = relative(directory, candidate);
+        return !child || (!isAbsolute(child) && child !== '..' && !child.startsWith(`..${sep}`));
+      })
+    )
+      throw new Error('The Codex executable must be outside the worktree and AgentGate state.');
+  }
+  if (!(await lstat(canonical)).isFile()) throw new Error('The Codex executable must be a file.');
+  return canonical;
 }
 
 /** Do not grant or recursively remove a redirected controller directory or worktree. */
@@ -439,7 +470,7 @@ export class CodexSandbox implements SandboxRunner {
     let failed = false;
     let uncertain = false;
     try {
-      session = await createSandboxSession(this.home);
+      session = await createSandboxSession(this.home, undefined, false, this.codexPath);
       const checks = await this.prerequisites(session, signal);
       signal?.throwIfAborted();
       if (checks.some((check) => !check.ok && check.name !== 'codex-auth')) return checks;
@@ -480,7 +511,7 @@ export class CodexSandbox implements SandboxRunner {
       const egressBaseline = await this.connectivity('1.1.1.1', 443, signal);
       for (const writable of [false, true]) {
         signal?.throwIfAborted();
-        const session = await createSandboxSession(this.home, workspace, writable);
+        const session = await createSandboxSession(this.home, workspace, writable, this.codexPath);
         let invocationFailed = false;
         let invocationUncertain = false;
         try {
@@ -598,7 +629,7 @@ export class CodexSandbox implements SandboxRunner {
       throw new Error(
         `Sandbox blocked: ${blocked.map((check) => `${check.name}: ${check.detail}`).join(' ')}`,
       );
-    const session = await createSandboxSession(this.home, worktree, true);
+    const session = await createSandboxSession(this.home, worktree, true, this.codexPath);
     let failed = false;
     let uncertain = false;
     try {

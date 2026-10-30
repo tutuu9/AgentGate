@@ -154,6 +154,7 @@ export class CodexRunner implements AgentRunner {
       this.home,
       context.run.worktree,
       stage === 'implement',
+      this.codexPath,
     );
     let failed = false;
     let uncertain = false;

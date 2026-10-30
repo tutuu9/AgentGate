@@ -86,6 +86,7 @@ test('Codex runner passes task data through stdin and preserves stage permission
   const responses = [plan, { summary: 'Implemented' }, { summary: 'Reviewed', findings: [] }];
   const runner = new CodexRunner({
     home: join(directory, 'home'),
+    codexPath: process.execPath,
     sandbox: {
       doctor: async () => [
         { name: 'mock', ok: true, detail: 'Unit-test fake; not isolation evidence.' },
@@ -106,8 +107,17 @@ test('Codex runner passes task data through stdin and preserves stage permission
     await runner.run('review', { run, diff: 'diff data' });
     const canonicalWorktree = await realpath(worktree);
     const canonicalCodexHome = await realpath(join(directory, 'home', 'codex'));
+    const canonicalExecutable = await realpath(process.execPath);
     assert.equal(captured.length, 3);
     captured.forEach((options, index) => {
+      assert.equal(options.command, process.execPath);
+      if (process.platform === 'linux')
+        assert.ok(
+          options.args.some((argument) =>
+            argument.includes(`${JSON.stringify(canonicalExecutable)}="read"`),
+          ),
+          'Every model stage must grant the selected native executable read access for self-reexec.',
+        );
       assert.ok(!options.args.includes('--model'));
       assert.ok(!options.args.some((argument) => argument.startsWith('model_reasoning_effort=')));
       assert.ok(options.args.includes('--ignore-user-config'));
@@ -145,6 +155,7 @@ test('Codex uses the explicitly selected model and reasoning effort for every st
   const runner = new CodexRunner({
     home: join(directory, 'home'),
     model: 'gpt-6.1-sol',
+    codexPath: process.execPath,
     reasoningEffort: 'high',
     sandbox: {
       doctor: async () => [{ name: 'fake', ok: true, detail: 'Not isolation evidence' }],
@@ -173,6 +184,7 @@ test('Codex rejects invalid model selection before doctor or execution', () => {
   let calls = 0;
   const options = {
     home: join(tmpdir(), 'unused-model-home'),
+    codexPath: process.execPath,
     sandbox: {
       doctor: async () => {
         calls++;
@@ -197,6 +209,7 @@ test('Codex runner fails closed before a model invocation when isolation is unav
   let calls = 0;
   const runner = new CodexRunner({
     home: tmpdir(),
+    codexPath: process.execPath,
     sandbox: { doctor: async () => [{ name: 'sandbox', ok: false, detail: 'No evidence' }] },
     executor: async () => {
       calls++;
@@ -228,6 +241,7 @@ test('Codex never starts after doctor cancellation and preserves uncertain termi
   let cancelDoctor = true;
   const runner = new CodexRunner({
     home: join(directory, 'home'),
+    codexPath: process.execPath,
     sandbox: {
       doctor: async (signal) => {
         if (cancelDoctor) {
@@ -274,6 +288,7 @@ test('Codex retains session files for nested uncertain termination and cleans or
       let schemaPath: string | undefined;
       const runner = new CodexRunner({
         home: join(directory, 'home'),
+        codexPath: process.execPath,
         sandbox: {
           doctor: async () => [{ name: 'fake', ok: true, detail: 'Not isolation evidence' }],
         },

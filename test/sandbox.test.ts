@@ -1,8 +1,17 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { access, mkdir, mkdtemp, readdir, realpath, rm, symlink } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir, userInfo } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import test from 'node:test';
 import {
   CODEX_VERSION,
@@ -100,6 +109,77 @@ test(
       if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
       else process.env.LOCALAPPDATA = previousLocalAppData;
     }
+  },
+);
+
+test(
+  'Linux grants only the canonical controller-selected executable for native self-reexec',
+  { skip: process.platform !== 'linux' },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-runtime-grant-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const tools = join(directory, 'tools');
+    const worktree = join(directory, 'checkout');
+    await mkdir(tools);
+    await mkdir(worktree);
+    const executable = join(tools, 'native-fixture');
+    // A policy fixture only; no executor or real Codex invocation is used here.
+    await writeFile(executable, 'controller-owned executable fixture', { mode: 0o700 });
+    await symlink(executable, join(tools, 'codex'));
+    const previousPath = process.env.PATH;
+    process.env.PATH = [tools, previousPath].filter(Boolean).join(delimiter);
+    let session;
+    try {
+      session = await createSandboxSession(join(directory, 'home'), worktree, true, 'codex');
+      const filesystem = session.configArgs.find((argument) => argument.includes('.filesystem='));
+      assert.ok(filesystem);
+      assert.ok(filesystem.includes(`${JSON.stringify(await realpath(executable))}="read"`));
+      assert.ok(!filesystem.includes(`${JSON.stringify(tools)}="read"`));
+      assert.ok(!filesystem.includes(`${JSON.stringify(join(tools, 'codex'))}="read"`));
+      assert.ok(filesystem.includes('":root"="deny"'));
+      assert.ok(filesystem.includes(`${JSON.stringify(await realpath(worktree))}="write"`));
+      assert.ok(filesystem.includes(`${JSON.stringify(session.env.CODEX_HOME)}="deny"`));
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await session?.cleanup();
+    }
+  },
+);
+
+test(
+  'Linux rejects worktree and state executables before granting native runtime access',
+  { skip: process.platform !== 'linux' },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-runtime-denial-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const home = join(directory, 'home');
+    const worktree = join(directory, 'checkout');
+    await mkdir(home);
+    await mkdir(worktree);
+    const outside = join(directory, 'controller-native');
+    await writeFile(outside, 'unexecuted fixture', { mode: 0o700 });
+    for (const root of [home, worktree]) {
+      const executable = join(root, 'untrusted-native');
+      await writeFile(executable, 'unexecuted fixture', { mode: 0o700 });
+      await assert.rejects(
+        createSandboxSession(home, worktree, true, executable),
+        /outside the worktree and AgentGate state/,
+      );
+      const alias = join(root, 'native-alias');
+      await symlink(outside, alias);
+      await assert.rejects(
+        createSandboxSession(home, worktree, true, alias),
+        /outside the worktree and AgentGate state/,
+      );
+    }
+    const stateAlias = join(directory, 'state-alias');
+    await symlink(join(home, 'untrusted-native'), stateAlias);
+    await assert.rejects(
+      createSandboxSession(home, worktree, true, stateAlias),
+      /outside the worktree and AgentGate state/,
+    );
+    assert.deepEqual(await readdir(join(home, 'runtime')), []);
   },
 );
 
@@ -260,6 +340,7 @@ test('Codex prerequisites reject unsupported versions, integrations and API bill
       [{ apiAuth: true }, 'codex-auth'],
     ] as const) {
       const checks = await new CodexSandbox({
+        codexPath: process.execPath,
         home: directory,
         executor: prerequisiteExecutor(options),
       }).prerequisites(session);
@@ -276,6 +357,7 @@ test('doctor stops immediately on cancellation and propagates uncertain terminat
   const abort = new AbortController();
   let calls = 0;
   const sandbox = new CodexSandbox({
+    codexPath: process.execPath,
     home: directory,
     executor: async (options) => {
       calls++;
@@ -290,6 +372,7 @@ test('doctor stops immediately on cancellation and propagates uncertain terminat
     assert.deepEqual(await readdir(join(directory, 'runtime')), []);
     const failure = new ProcessError('termination', 'Unverified owned process tree.');
     const uncertain = new CodexSandbox({
+      codexPath: process.execPath,
       home: directory,
       executor: async (options) => {
         // Missing scratch deliberately makes cleanup fail; the primary termination must survive.
@@ -316,6 +399,7 @@ test('doctor preserves launchers and probe fixtures until uncertain termination 
       const launchers = new Set<string>();
       const prerequisites = prerequisiteExecutor();
       const sandbox = new CodexSandbox({
+        codexPath: process.execPath,
         home,
         connectivity: async () => true,
         executor: async (options) => {
@@ -349,6 +433,7 @@ test('doctor cleans native probe fixtures after a verified timeout or cancellati
     const home = join(directory, kind);
     const prerequisites = prerequisiteExecutor();
     const sandbox = new CodexSandbox({
+      codexPath: process.execPath,
       home,
       connectivity: async () => true,
       executor: async (options) => {
@@ -372,6 +457,7 @@ test('doctor rejects the other platform contract before executing a sandbox comm
   const commands: string[][] = [];
   const executor = prerequisiteExecutor({ version: incompatibleVersion });
   const sandbox = new CodexSandbox({
+    codexPath: process.execPath,
     home: directory,
     executor: async (options) => {
       commands.push([...options.args]);
@@ -393,6 +479,7 @@ test(
     const prerequisites = prerequisiteExecutor();
     const sandboxCommands: ExecuteOptions[] = [];
     const sandbox = new CodexSandbox({
+      codexPath: process.execPath,
       home: directory,
       connectivity: async () => true,
       executor: async (options) => {
@@ -429,6 +516,7 @@ test('check launches fixed trampoline with separate argv and redacts output', as
     }
   }
   const sandbox = new FakeVerifiedSandbox({
+    codexPath: process.execPath,
     home: join(directory, 'home'),
     executor: async (options) => {
       captured = options;
@@ -476,6 +564,7 @@ test('check preserves uncertain worker scratch but cleans verified stopped worke
     const failure = kind === 'nested-termination' ? new AggregateError([cause]) : cause;
     let launcher: string | undefined;
     const sandbox = new FakeVerifiedSandbox({
+      codexPath: process.execPath,
       home: join(directory, kind),
       executor: async (options) => {
         launcher = options.cwd;
@@ -513,6 +602,7 @@ test('synthetic probe observations fail closed on missing network evidence or fo
   let baseline = true;
   let probeCalls = 0;
   const sandbox = new CodexSandbox({
+    codexPath: process.execPath,
     home: directory,
     connectivity: async () => baseline,
     executor: async (options) => {

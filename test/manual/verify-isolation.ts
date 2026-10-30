@@ -134,12 +134,13 @@ async function listener(host: string) {
 }
 
 async function withSession<T>(
+  codexPath: string,
   home: string,
   workspace: string | undefined,
   writable: boolean,
   operation: (session: SandboxSession) => Promise<T>,
 ): Promise<T> {
-  const session = await createSandboxSession(home, workspace, writable);
+  const session = await createSandboxSession(home, workspace, writable, codexPath);
   let uncertain = false;
   try {
     return await operation(session);
@@ -242,7 +243,7 @@ async function runStage(
   for (const directory of ['.agents', '.codex', '.aws']) await mkdir(join(workspace, directory));
   for (const file of Object.values(files))
     await writeFile(join(workspace, file), 'fake fixture only', { flag: 'wx' });
-  return withSession(home, workspace, writable, async (session) => {
+  return withSession(codexPath, home, workspace, writable, async (session) => {
     const nonce = randomUUID();
     const reads = {
       workspace: join(workspace, 'allowed.txt'),
@@ -378,7 +379,7 @@ async function main(): Promise<void> {
   let uncertain = false;
   let passed = true;
   try {
-    await withSession(home, undefined, false, async (session) => {
+    await withSession(codexPath, home, undefined, false, async (session) => {
       const result = await execute({
         command: codexPath,
         args: [...session.configArgs, '--version'],

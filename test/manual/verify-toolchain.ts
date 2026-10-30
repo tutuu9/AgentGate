@@ -115,7 +115,7 @@ export default tseslint.config(js.configs.recommended, ...tseslint.configs.recom
 }
 
 async function runCheck(codexPath: string, home: string, workspace: string, name: string) {
-  const session = await createSandboxSession(home, workspace, true);
+  const session = await createSandboxSession(home, workspace, true, codexPath);
   let uncertain = false;
   try {
     const command = await resolveCommand('npm', ['run', name], session.env, workspace);
@@ -154,7 +154,7 @@ async function runCheck(codexPath: string, home: string, workspace: string, name
 }
 
 async function verifyVersion(codexPath: string, home: string): Promise<void> {
-  const session = await createSandboxSession(home);
+  const session = await createSandboxSession(home, undefined, false, codexPath);
   let uncertain = false;
   try {
     const result = await execute({
@@ -181,7 +181,7 @@ async function verifyCancellation(
   home: string,
   workspace: string,
 ): Promise<void> {
-  const session = await createSandboxSession(home, workspace, true);
+  const session = await createSandboxSession(home, workspace, true, codexPath);
   const nonce = randomUUID();
   const heartbeat = join(workspace, `cancellation-${nonce}.json`);
   const child = `const fs=require('node:fs');const [path,nonce]=process.argv.slice(1);let counter=0;
