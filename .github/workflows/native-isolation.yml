@@ -79,12 +79,15 @@ jobs:
           "$AGENTGATE_CODEX_PATH" --version
           git rev-parse HEAD
       - name: Verify native filesystem and network isolation without a model
+        id: isolation
         run: node test/manual/verify-isolation.ts "$AGENTGATE_CODEX_PATH" | tee "$RUNNER_TEMP/agentgate-isolation.jsonl"
       - name: Verify offline Node and TypeScript checks without a model
         run: node test/manual/verify-toolchain.ts "$AGENTGATE_CODEX_PATH"
       - name: Verify real process cancellation and stale-lock refusal
+        if: ${{ !cancelled() && steps.isolation.outcome == 'success' }}
         run: node test/manual/verify-lock-recovery.ts
       - name: Require captured Node child stream compatibility for Linux MVP
+        if: ${{ !cancelled() && steps.isolation.outcome == 'success' }}
         run: |
           node --input-type=module - "$RUNNER_TEMP/agentgate-isolation.jsonl" <<'NODE'
           import { readFileSync } from 'node:fs';
