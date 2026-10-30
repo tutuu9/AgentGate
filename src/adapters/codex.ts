@@ -9,6 +9,7 @@ import type {
   AgentStage,
   SandboxRunner,
 } from '../core/contracts.ts';
+import { hasUncertainTermination } from '../core/errors.ts';
 import { execute, type Executor } from './process.ts';
 import {
   CodexSandbox,
@@ -155,6 +156,7 @@ export class CodexRunner implements AgentRunner {
       stage === 'implement',
     );
     let failed = false;
+    let uncertain = false;
     try {
       signal?.throwIfAborted();
       const schemaPath = join(session.launcher, 'response.schema.json');
@@ -199,9 +201,10 @@ export class CodexRunner implements AgentRunner {
       return parseAgentOutput(stage, result.stdout);
     } catch (error) {
       failed = true;
+      uncertain = hasUncertainTermination(error);
       throw error;
     } finally {
-      await cleanupPreservingError(() => session.cleanup(), failed);
+      if (!uncertain) await cleanupPreservingError(() => session.cleanup(), failed);
     }
   }
 }

@@ -258,3 +258,41 @@ test('Codex never starts after doctor cancellation and preserves uncertain termi
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('Codex retains session files for nested uncertain termination and cleans ordinary failures', async (t) => {
+  const uncertain = new Error('Worker wrapper failed', {
+    cause: new AggregateError(
+      [new Error('Shutdown wrapper', { cause: new ProcessError('termination', 'Not verified') })],
+      'Process shutdown failed',
+    ),
+  });
+  const ordinary = new Error('Worker failed after confirmed termination');
+  for (const failure of [uncertain, ordinary]) {
+    await t.test(failure === uncertain ? 'uncertain shutdown' : 'ordinary failure', async (t) => {
+      const directory = await mkdtemp(join(tmpdir(), 'agentgate-codex-cleanup-'));
+      t.after(() => rm(directory, { recursive: true, force: true }));
+      let schemaPath: string | undefined;
+      const runner = new CodexRunner({
+        home: join(directory, 'home'),
+        sandbox: {
+          doctor: async () => [{ name: 'fake', ok: true, detail: 'Not isolation evidence' }],
+        },
+        executor: async (options) => {
+          schemaPath = options.args[options.args.indexOf('--output-schema') + 1];
+          throw failure;
+        },
+      });
+
+      await assert.rejects(
+        runner.run('plan', { run: fixtureRun(directory) }),
+        (error) => error === failure,
+      );
+      assert.ok(schemaPath);
+      if (failure === uncertain) {
+        assert.equal(JSON.parse(await readFile(schemaPath, 'utf8')).type, 'object');
+      } else {
+        await assert.rejects(readFile(schemaPath), { code: 'ENOENT' });
+      }
+    });
+  }
+});

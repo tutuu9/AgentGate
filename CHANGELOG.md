@@ -18,6 +18,7 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Fixed
 
+- Preserve sandbox sessions and probe fixtures when process-tree termination cannot be verified, including errors nested in causes or aggregates.
 - Describe the approved objective in PR text after recovery instead of publishing an intermediate repair diagnostic as the final summary.
 - Support npm and nested Node script startup inside Windows MXC with fixed symlink-preservation flags while retaining default-deny filesystem permissions.
 - Preserve the actual Windows username when refreshing the native Codex sandbox; ignore caller-supplied identity overrides while continuing to exclude credentials.

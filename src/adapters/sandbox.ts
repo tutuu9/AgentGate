@@ -4,6 +4,7 @@ import { createConnection, createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { z } from 'zod';
+import { hasUncertainTermination } from '../core/errors.ts';
 import {
   CheckSchema,
   type CheckResult,
@@ -417,7 +418,7 @@ export class CodexSandbox implements SandboxRunner {
           : 'The expected native sandbox permission-profile interface is unavailable.',
       });
     } catch (error) {
-      if (error instanceof ProcessError && error.kind === 'termination') throw error;
+      if (hasUncertainTermination(error)) throw error;
       signal?.throwIfAborted();
       checks.push({ name: 'codex-prerequisites', ok: false, detail: diagnostic(error) });
     }
@@ -436,6 +437,7 @@ export class CodexSandbox implements SandboxRunner {
       ];
     let session: SandboxSession | undefined;
     let failed = false;
+    let uncertain = false;
     try {
       session = await createSandboxSession(this.home);
       const checks = await this.prerequisites(session, signal);
@@ -445,11 +447,12 @@ export class CodexSandbox implements SandboxRunner {
       return checks;
     } catch (error) {
       failed = true;
-      if (error instanceof ProcessError && error.kind === 'termination') throw error;
+      uncertain = hasUncertainTermination(error);
+      if (uncertain) throw error;
       signal?.throwIfAborted();
       return [{ name: 'sandbox-doctor', ok: false, detail: diagnostic(error) }];
     } finally {
-      await cleanupPreservingError(async () => session?.cleanup(), failed);
+      if (!uncertain) await cleanupPreservingError(async () => session?.cleanup(), failed);
     }
   }
 
@@ -465,6 +468,7 @@ export class CodexSandbox implements SandboxRunner {
     const server = createServer((socket) => socket.end());
     const checks: DoctorCheck[] = [];
     let failed = false;
+    let uncertain = false;
     try {
       await new Promise<void>((resolveListen, reject) => {
         server.once('error', reject);
@@ -478,6 +482,7 @@ export class CodexSandbox implements SandboxRunner {
         signal?.throwIfAborted();
         const session = await createSandboxSession(this.home, workspace, writable);
         let invocationFailed = false;
+        let invocationUncertain = false;
         try {
           signal?.throwIfAborted();
           const result = await this.executor({
@@ -550,7 +555,8 @@ export class CodexSandbox implements SandboxRunner {
           });
         } catch (error) {
           invocationFailed = true;
-          if (error instanceof ProcessError && error.kind === 'termination') throw error;
+          invocationUncertain = hasUncertainTermination(error);
+          if (invocationUncertain) throw error;
           signal?.throwIfAborted();
           checks.push({
             name: writable ? 'sandbox-write' : 'sandbox-read',
@@ -559,23 +565,26 @@ export class CodexSandbox implements SandboxRunner {
           });
           break;
         } finally {
-          await cleanupPreservingError(() => session.cleanup(), invocationFailed);
+          if (!invocationUncertain)
+            await cleanupPreservingError(() => session.cleanup(), invocationFailed);
         }
       }
       return checks;
     } catch (error) {
       failed = true;
+      uncertain = hasUncertainTermination(error);
       throw error;
     } finally {
       server.close();
-      await cleanupPreservingError(async () => {
-        const safe = relative(join(this.home, 'runtime'), fixture);
-        if (safe && !safe.startsWith('..') && !isAbsolute(safe)) {
-          await canonicalDirectory(join(this.home, 'runtime'));
-          await canonicalDirectory(fixture);
-          await rm(fixture, { recursive: true, force: true });
-        }
-      }, failed);
+      if (!uncertain)
+        await cleanupPreservingError(async () => {
+          const safe = relative(join(this.home, 'runtime'), fixture);
+          if (safe && !safe.startsWith('..') && !isAbsolute(safe)) {
+            await canonicalDirectory(join(this.home, 'runtime'));
+            await canonicalDirectory(fixture);
+            await rm(fixture, { recursive: true, force: true });
+          }
+        }, failed);
     }
   }
 
@@ -591,6 +600,7 @@ export class CodexSandbox implements SandboxRunner {
       );
     const session = await createSandboxSession(this.home, worktree, true);
     let failed = false;
+    let uncertain = false;
     try {
       signal?.throwIfAborted();
       const command = await resolveCommand(spec.command, spec.args, session.env, worktree);
@@ -627,9 +637,10 @@ export class CodexSandbox implements SandboxRunner {
       };
     } catch (error) {
       failed = true;
+      uncertain = hasUncertainTermination(error);
       throw error;
     } finally {
-      await cleanupPreservingError(() => session.cleanup(), failed);
+      if (!uncertain) await cleanupPreservingError(() => session.cleanup(), failed);
     }
   }
 }

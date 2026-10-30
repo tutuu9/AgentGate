@@ -287,6 +287,7 @@ test('doctor stops immediately on cancellation and propagates uncertain terminat
   try {
     await assert.rejects(sandbox.doctor(abort.signal), /test cancellation/);
     assert.equal(calls, 1);
+    assert.deepEqual(await readdir(join(directory, 'runtime')), []);
     const failure = new ProcessError('termination', 'Unverified owned process tree.');
     const uncertain = new CodexSandbox({
       home: directory,
@@ -299,6 +300,68 @@ test('doctor stops immediately on cancellation and propagates uncertain terminat
     await assert.rejects(uncertain.doctor(), (error) => error === failure);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('doctor preserves launchers and probe fixtures until uncertain termination is resolved', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-doctor-preservation-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  for (const stage of ['prerequisite', 'probe']) {
+    for (const nested of [false, true]) {
+      const home = join(directory, `${stage}-${nested}`);
+      const termination = new ProcessError('termination', 'Fake unverified worker shutdown.');
+      const failure = nested
+        ? new Error('Wrapped fixture failure', { cause: new AggregateError([termination]) })
+        : termination;
+      const launchers = new Set<string>();
+      const prerequisites = prerequisiteExecutor();
+      const sandbox = new CodexSandbox({
+        home,
+        connectivity: async () => true,
+        executor: async (options) => {
+          launchers.add(options.cwd!);
+          if (
+            stage === 'prerequisite' ||
+            (options.args.includes('sandbox') && !options.args.includes('--help'))
+          )
+            throw failure;
+          return prerequisites(options);
+        },
+      });
+
+      await assert.rejects(sandbox.doctor(), (error) => error === failure);
+
+      assert.equal(launchers.size, stage === 'probe' ? 2 : 1);
+      for (const launcher of launchers) await access(launcher);
+      const probes = (await readdir(join(home, 'runtime'))).filter((name) =>
+        name.startsWith('probe-'),
+      );
+      assert.equal(probes.length, stage === 'probe' ? 1 : 0);
+      if (stage === 'probe') await access(join(home, 'runtime', probes[0]!, 'fake-secret.txt'));
+    }
+  }
+});
+
+test('doctor cleans native probe fixtures after a verified timeout or cancellation', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-doctor-cleanup-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  for (const kind of ['timeout', 'aborted'] as const) {
+    const home = join(directory, kind);
+    const prerequisites = prerequisiteExecutor();
+    const sandbox = new CodexSandbox({
+      home,
+      connectivity: async () => true,
+      executor: async (options) => {
+        if (options.args.includes('sandbox') && !options.args.includes('--help'))
+          throw new ProcessError(kind, 'Fake worker shutdown was verified.');
+        return prerequisites(options);
+      },
+    });
+
+    const checks = await sandbox.doctor();
+
+    assert.equal(checks.find((check) => check.name === 'sandbox-read')?.ok, false);
+    assert.deepEqual(await readdir(join(home, 'runtime')), []);
   }
 });
 
@@ -389,8 +452,48 @@ test('check launches fixed trampoline with separate argv and redacts output', as
     assert.ok(captured?.args.includes('--include-managed-config'));
     assert.notEqual(captured?.cwd, worktree);
     assert.equal(captured?.env?.GH_TOKEN, undefined);
+    await assert.rejects(access(captured!.cwd!), { code: 'ENOENT' });
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('check preserves uncertain worker scratch but cleans verified stopped workers', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-check-preservation-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const worktree = join(directory, 'checkout');
+  await mkdir(worktree);
+  class FakeVerifiedSandbox extends CodexSandbox {
+    override async doctor() {
+      return [{ name: 'unit-test', ok: true, detail: 'Fake; not native isolation evidence.' }];
+    }
+  }
+  for (const kind of ['termination', 'nested-termination', 'timeout', 'aborted'] as const) {
+    const cause = new ProcessError(
+      kind === 'nested-termination' ? 'termination' : kind,
+      'Fake worker exit state.',
+    );
+    const failure = kind === 'nested-termination' ? new AggregateError([cause]) : cause;
+    let launcher: string | undefined;
+    const sandbox = new FakeVerifiedSandbox({
+      home: join(directory, kind),
+      executor: async (options) => {
+        launcher = options.cwd;
+        throw failure;
+      },
+    });
+
+    await assert.rejects(
+      sandbox.check(
+        { name: 'fixture', command: process.execPath, args: ['--version'], timeoutMs: 1000 },
+        worktree,
+      ),
+      (error) => error === failure,
+    );
+
+    assert.ok(launcher);
+    if (kind.includes('termination')) await access(launcher);
+    else await assert.rejects(access(launcher), { code: 'ENOENT' });
   }
 });
 
