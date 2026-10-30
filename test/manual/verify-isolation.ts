@@ -191,15 +191,21 @@ function connect(host, port) { return new Promise(resolve => {
   const stage=p.child?p.childHandshake:p.directHandshake;
   fs.writeFileSync(stage.report,JSON.stringify(observations),{flag:'wx'});
   await handshake(stage.ready,stage.proceed);
-  // This nested Node spawn creates socketpairs inside seccomp; report on the descriptor
-  // directly because Node's console socket classification needs denied network syscalls.
-  if (p.child) return fs.writeSync(1, JSON.stringify(observations) + '\n');
+  // Permission observations use the shared scratch report and inherited streams.
+  // Captured Node child stdio is measured independently and remains a compatibility gate.
+  if (p.child) return;
   const child = spawnSync(process.execPath, ['-e', process.argv[2], JSON.stringify({...p,child:true}), process.argv[2]], {
-    shell: false, windowsHide: true, encoding: 'utf8', timeout: 15000, maxBuffer: 8192
+    shell: false, windowsHide: true, stdio: ['ignore','inherit','inherit'], timeout: 15000
   });
-  if (child.status !== 0 || child.error) throw new Error('Child probe did not complete');
-  console.log(JSON.stringify({initiallyAbsent,observations,child:JSON.parse(child.stdout.trim())}));
-})().catch(() => process.exit(2));`;
+  if (child.status !== 0 || child.error) {
+    fs.writeSync(2,JSON.stringify({phase:'native-child-fixture-failure',exitCode:child.status,errorCode:child.error?.code??null})+'\n');
+    throw new Error('Child probe did not complete');
+  }
+  console.log(JSON.stringify({initiallyAbsent,observations,child:JSON.parse(fs.readFileSync(p.childHandshake.report,'utf8'))}));
+})().catch(error=>{
+  fs.writeSync(2,JSON.stringify({phase:'native-fixture-failure',errorName:error?.name??null,errorCode:error?.code??null,message:String(error?.message??'Fixture failed').slice(0,160)})+'\n');
+  process.exit(2);
+});`;
 
 const Observation = z
   .object({
@@ -425,8 +431,15 @@ async function runStage(
     const outcome = await execution;
     if ('error' in outcome) throw outcome.error;
     if (handshakeError) throw handshakeError;
-    if (outcome.result.exitCode !== 0)
+    if (outcome.result.exitCode !== 0) {
+      emit({
+        phase: 'native-expanded-fixture-failure',
+        exitCode: outcome.result.exitCode,
+        diagnostic: cleanTerminal(redact(outcome.result.stderr)).slice(0, 2048),
+        modelInvoked: false,
+      });
       throw new Error(`Sandbox fixture exited ${outcome.result.exitCode}; raw output discarded.`);
+    }
     let value: unknown;
     try {
       value = JSON.parse(outcome.result.stdout.trim());
@@ -479,6 +492,8 @@ async function runStage(
         conforms(result.child),
       strippedInController,
       hostIsolationVerified,
+      childObservationChannel: 'shared-scratch-report',
+      childStdio: 'inherited',
       hostDuring: during.map(({ stage, host }) => ({ stage, ...host })),
       hostAfter: after,
       ...result,
