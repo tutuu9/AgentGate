@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, delimiter, dirname, join } from 'node:path';
 import { runInNewContext } from 'node:vm';
@@ -254,9 +254,18 @@ test('snapshot includes new and binary files, deletions and modes while respecti
     await f.git(['ls-tree', '-r', '--name-only', tree], f.worktree),
     '.gitignore\nasset.bin\nnew.ts',
   );
-  await f.git(['update-index', '--chmod=+x', 'new.ts'], f.worktree);
+  if (process.platform === 'win32') {
+    await f.git(['config', 'core.fileMode', 'false']);
+    await f.git(['update-index', '--chmod=+x', 'new.ts'], f.worktree);
+  } else {
+    await chmod(join(f.worktree, 'new.ts'), 0o755);
+  }
   const executableTree = await f.gateway.snapshot(f.worktree);
   assert.notEqual(executableTree, tree);
+  assert.match(
+    await f.git(['ls-tree', executableTree, '--', 'new.ts'], f.worktree),
+    /^100755 blob /,
+  );
 });
 
 test('snapshot blocks sensitive files, secret values and executable Git filters before staging', async (t) => {
