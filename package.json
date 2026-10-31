@@ -24,7 +24,7 @@
     "docs"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/build-web.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test --test-concurrency=1 test/*.test.ts",
     "lint": "eslint src test",

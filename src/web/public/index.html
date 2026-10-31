@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>AgentGate · Local workflows</title>
+    <link rel="stylesheet" href="/app.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">Skip to workspace</a>
+    <header class="app-header">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">A</span>AgentGate</div>
+      <span class="local-label">Local workflow workspace</span>
+      <div class="connection" id="connection" role="status">Connecting…</div>
+    </header>
+
+    <div id="session-message" class="session-message" role="alert" hidden></div>
+    <div id="error-message" class="error-message" role="alert" hidden></div>
+
+    <div class="app-layout">
+      <aside class="sidebar" aria-label="Repositories and runs">
+        <section aria-labelledby="repositories-heading">
+          <h2 id="repositories-heading">Repositories</h2>
+          <div id="repositories" class="repository-list"></div>
+        </section>
+        <section class="history-section" aria-labelledby="history-heading">
+          <div class="section-heading">
+            <h2 id="history-heading">Run history</h2>
+            <span id="run-count" class="count">0</span>
+          </div>
+          <div id="run-list" class="run-list"></div>
+        </section>
+        <p class="sidebar-note">
+          Repository setup and cleanup stay in the CLI. Your runs use the same local state.
+        </p>
+      </aside>
+
+      <main id="workspace" class="workspace">
+        <div class="workspace-heading">
+          <div>
+            <h1>Issue to pull request</h1>
+            <p>Review the plan. Inspect the result. Approve the exact commit.</p>
+          </div>
+        </div>
+
+        <section class="new-run" aria-labelledby="new-run-heading">
+          <h2 id="new-run-heading">Start a run</h2>
+          <form id="start-form">
+            <fieldset id="start-fields">
+              <div class="start-inputs">
+                <label
+                  >Repository<select id="repository" name="repository" required>
+                    <option value="">Choose a repository</option>
+                  </select></label
+                >
+                <label class="issue-input"
+                  >GitHub issue URL<input
+                    id="issue-url"
+                    name="issue-url"
+                    type="url"
+                    required
+                    placeholder="https://github.com/owner/repo/issues/123"
+                    autocomplete="off"
+                /></label>
+                <button id="start-button" class="primary" type="submit">Start run</button>
+              </div>
+              <details class="model-options">
+                <summary>Model options</summary>
+                <div class="model-inputs">
+                  <label
+                    >Model<input
+                      id="model"
+                      name="model"
+                      type="text"
+                      placeholder="Use the configured CLI default"
+                      autocomplete="off"
+                  /></label>
+                  <label
+                    >Reasoning effort<select id="reasoning-effort" name="reasoning-effort">
+                      <option value="">CLI default</option>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="xhigh">Extra high</option>
+                      <option value="max">Maximum</option>
+                    </select></label
+                  >
+                </div>
+                <p class="hint">These choices apply to a new run or its next resume only.</p>
+              </details>
+            </fieldset>
+          </form>
+          <p id="no-repositories" class="hint" hidden>
+            Register a local repository in your terminal first:
+            <code>agentgate repo add &lt;local-path&gt;</code>. If you use a custom state directory,
+            pass the same <code>--home</code>.
+          </p>
+          <div id="request-retry" class="request-retry" hidden>
+            <p>
+              The server response was lost. Retry the same request to find out whether it started.
+            </p>
+            <button id="retry-request" type="button">Retry request</button>
+          </div>
+        </section>
+
+        <section id="operation" class="operation" aria-label="Current operation" hidden></section>
+        <section id="prompt" class="approval" aria-labelledby="prompt-heading" hidden></section>
+
+        <section id="selected-run" class="selected-run" aria-labelledby="selected-run-heading">
+          <div class="empty-state">
+            <div class="empty-symbol" aria-hidden="true">↳</div>
+            <h2 id="selected-run-heading">Your next change starts with an issue</h2>
+            <p>Start a run above, or select a saved run to inspect its plan and results.</p>
+            <p class="hint">
+              Implementation waits for your plan approval. Publication requires a separate decision.
+            </p>
+          </div>
+        </section>
+
+        <details id="activity" class="activity" hidden>
+          <summary>Controller activity</summary>
+          <pre id="activity-output"></pre>
+        </details>
+        <footer class="workspace-footer">
+          Local execution. Explicit approvals. Unpublished work is preserved.
+        </footer>
+      </main>
+    </div>
+  </body>
+</html>

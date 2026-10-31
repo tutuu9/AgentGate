@@ -18,7 +18,7 @@ The source implements the first workflow layers and their test seams. Milestones
 Tracking Issues:
 
 - [Native Windows/Linux sandbox acceptance](https://github.com/tutuu9/AgentGate/issues/1) remains open, with concrete blockers in [Linux process shutdown #6](https://github.com/tutuu9/AgentGate/issues/6) and [Node stream/network compatibility #7](https://github.com/tutuu9/AgentGate/issues/7). Automatic Native Linux CI is paused at the maintainer's request; ordinary Windows/Ubuntu CI remains enabled. [Real workflow/recovery acceptance](https://github.com/tutuu9/AgentGate/issues/2) is completed for Windows MXC. The [v0.1 CLI acceptance milestone](https://github.com/tutuu9/AgentGate/milestone/1) remains open.
-- [Local web interface](https://github.com/tutuu9/AgentGate/issues/3) belongs to [v0.2](https://github.com/tutuu9/AgentGate/milestone/2).
+- [Local web interface](https://github.com/tutuu9/AgentGate/issues/3) belongs to [v0.2](https://github.com/tutuu9/AgentGate/milestone/2). The implementation adds browser workflow control over the same core; repository registration, check configuration, and cleanup remain CLI operations. Its coverage is tracked in [web acceptance](web-acceptance.md).
 - [Claude Code adapter](https://github.com/tutuu9/AgentGate/issues/4) belongs to [v0.3](https://github.com/tutuu9/AgentGate/milestone/3).
 
 ## Before a first public release
@@ -34,7 +34,7 @@ Tracking Issues:
 
 ## Later iterations
 
-1. Add a local web interface backed by the same core; keep CLI operation available.
+1. Evaluate the local web workflow preview with the same native platform restrictions; keep CLI operation available.
 2. Add a Claude Code adapter after checking its current supported integration/authentication terms and matching the same permission contract.
 3. Expand compatibility from measured evidence: additional Codex versions, macOS or WSL, and richer offline toolchains.
 4. Consider multiple tasks, queues, team use, or remote execution only when real use justifies additional state and security complexity.

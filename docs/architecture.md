@@ -1,6 +1,6 @@
 # Architecture
 
-AgentGate is a local controller with explicit adapters around external tools. The first delivery is a CLI for one active run per state home. There is no server, database service, task queue service, or webhook listener.
+AgentGate is a local controller with explicit adapters around external tools. CLI and optional loopback browser interfaces share one active run per state home. There is no database service, task queue service, hosted worker, or webhook listener.
 
 ## Components
 
@@ -12,8 +12,21 @@ AgentGate is a local controller with explicit adapters around external tools. Th
 | `src/core/safety.ts`    | Approval fingerprinting, scope boundaries, credential redaction, and safe terminal output.                |
 | `src/adapters/`         | Argument-based process execution, Git/GitHub operations, Codex invocation, and native sandbox preflight.  |
 | `src/cli/`              | Commands, repository registration, terminal rendering, and human decisions.                               |
+| `src/web/`              | Authenticated loopback HTTP, browser decisions, operation coordination, and local static assets.          |
 
-The core uses `AgentRunner`, `SandboxRunner`, `GitHubGateway`, and `UserInteraction` interfaces so tests can exercise behavior with fake providers. These seams also leave room for a later web interface and Claude adapter without implementing either now.
+The core uses `AgentRunner`, `SandboxRunner`, `GitHubGateway`, and `UserInteraction` interfaces so tests can exercise behavior with fake providers. Terminal and browser interaction adapters share the same workflow authority. A future Claude adapter can use the existing provider seam.
+
+## Local browser boundary
+
+`agentgate web` serves a fixed allowlist of bundled assets and a JSON API using Node HTTP on `127.0.0.1`. It generates a fresh 256-bit access token in controller memory and prints it only in the launch URL fragment. The browser removes the fragment, retains the token in session storage, and sends it in `X-AgentGate-Token` on every API request. Exact Host validation prevents alternate DNS names from addressing the listener. POST additionally requires the exact Origin, JSON, strict schemas, and at most 64 KiB. No CORS permission or arbitrary file-serving endpoint exists. CSP, no-framing, no-store, no-referrer, and text-only rendering constrain browser content. This protects against unrelated web origins; it is not a sandbox against a compromised browser or trusted local user who possesses the link.
+
+`GET /api/state` exposes registered profiles, run summaries, the latest operation, and the live pending prompt. `GET /api/runs/:id` reads saved details and an available captured publication diff; `GET /api/operations/:id` reports an operation even if preflight failed before creating a run. POST routes start a run, resume it, cancel an operation, answer a prompt, or inspect an idle run. No endpoint directly sets durable approval fields.
+
+The web controller synchronously reserves one operation before asynchronous work. Workflow start/resume owns the existing file lease; inspection reserves the same web slot and takes that lease itself. Request IDs make start/resume retries idempotent for the lifetime of the server, including after completion; reuse with different inputs is rejected. The operation ID exists before its run ID, which becomes available through a typed interaction callback or the workflow result. Messages are never parsed for identity.
+
+Each browser interaction holds one pending promise and an immutable, scrubbed prompt snapshot. Replies must match its unique prompt ID and the plan fingerprint or exact commit. The adapter consumes the prompt once and returns the decision to `Workflow`; ordinary-PR fallback has its own prompt. Refresh and disconnection have no approval or cancellation effect. Cancellation rejects pending promises and aborts work, while shutdown waits for execution to settle. The core retains its lease after uncertain process termination.
+
+Prompts and operation receipts are ephemeral; the durable run schema stays unchanged. Server restart rotates the token and requires explicit resume through the existing recovery rules. Polling never invokes `GitHubGateway.snapshot`, which stages files. During an operation, only the diff captured by publication approval is exposed. Explicit idle inspection takes the common lease around snapshot/diff and respects uncertain shutdown.
 
 ## Task flow
 
@@ -57,6 +70,8 @@ run.lock               Exclusive active-process lease
 ```
 
 Run state has a schema version; unsupported or malformed state is rejected rather than reset. Writes use a private temporary file, file sync, and rename. Existing linked or special storage files and redirected managed directories are rejected where the filesystem APIs can establish them. On Unix, state files request mode `0600` and managed directories `0700`.
+
+Reads and writes through one store instance are serialized per JSON file so browser polling cannot hold a Windows handle across replacement. A transient Windows rename denial from another reader is retried for a bounded interval, revalidating the destination boundary each time. Other failures remain errors, and the temporary file is removed on an ordinary failed write.
 
 A lock belongs to a PID and random nonce. It is released after a graceful controller exit. Neither live/reused nor dead PIDs authorize automatic lock reclamation: an abruptly terminated controller may leave a worker or check running. A malformed lock also blocks execution.
 

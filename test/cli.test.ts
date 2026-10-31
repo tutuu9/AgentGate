@@ -15,6 +15,29 @@ test('CLI help is available without credentials or state initialization', () => 
   assert.match(result.stdout, /--model <id>/);
   assert.match(result.stdout, /--reasoning-effort <effort>/);
   assert.match(result.stdout, /repeat them when resuming/);
+  assert.match(result.stdout, /agentgate web/);
+});
+
+test('web rejects invalid ports and misplaced options before initializing state', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-web-cli-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const home = join(directory, 'state-must-not-exist');
+  for (const args of [
+    ['web', '--port', '-1'],
+    ['web', '--port', '65536'],
+    ['web', '--port', '1.5'],
+    ['web', '--port', ''],
+    ['status', '--port', '0'],
+    ['web', '--host', '0.0.0.0'],
+    ['web', '--model', 'gpt-6.1-sol'],
+    ['web', 'unexpected'],
+  ]) {
+    const result = spawnSync(process.execPath, ['src/cli/main.ts', ...args, '--home', home], {
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 1, result.stdout);
+    await assert.rejects(access(home), { code: 'ENOENT' });
+  }
 });
 
 test('CLI does not offer noninteractive approval bypasses', () => {
