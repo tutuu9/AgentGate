@@ -150,6 +150,33 @@ test('replacing saved state is atomic and leaves no temporary files', async (t) 
   assert.equal((await store.getRun(value.id)).message, value.message);
 });
 
+test('concurrent status readers cannot interrupt durable run updates', async (t) => {
+  const { store, root, home } = await fixture(t);
+  const value = run(root);
+  value.message = 'Revision 0';
+  value.implementationSummary = value.message;
+  await store.saveRun(value);
+  const read = async () => {
+    for (let index = 0; index < 20; index += 1) {
+      const [single, listed] = await Promise.all([store.getRun(value.id), store.listRuns()]);
+      for (const observed of [single, ...listed]) {
+        assert.equal(observed.id, value.id);
+        assert.match(observed.message ?? '', /^Revision \d+$/);
+        assert.equal(observed.implementationSummary, observed.message);
+      }
+    }
+  };
+  const save = async () => {
+    for (let index = 1; index <= 20; index += 1) {
+      const message = `Revision ${index}`;
+      await store.saveRun({ ...value, message, implementationSummary: message });
+    }
+  };
+  await Promise.all([save(), read(), read(), read(), read()]);
+  assert.equal((await store.getRun(value.id)).message, 'Revision 20');
+  assert.deepEqual(await readdir(join(home, 'runs')), [`${value.id}.json`]);
+});
+
 test('a live lock has one owner, including contention from the same PID', async (t) => {
   const { store, home } = await fixture(t);
   const release = await store.acquireLock();

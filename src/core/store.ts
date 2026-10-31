@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { RepoSchema, RunSchema, type RepoProfile, type Run } from './contracts.ts';
 import { scrubForStorage } from './safety.ts';
@@ -45,6 +46,7 @@ function within(parent: string, child: string): boolean {
 export class FileRunStore {
   readonly home: string;
   private root: string | undefined;
+  private readonly fileOperations = new Map<string, Promise<void>>();
 
   constructor(home: string) {
     this.home = resolve(home);
@@ -222,6 +224,10 @@ export class FileRunStore {
   }
 
   private async readJson<T>(path: string, schema: z.ZodType<T>): Promise<T> {
+    return this.withFile(path, () => this.readJsonUnlocked(path, schema));
+  }
+
+  private async readJsonUnlocked<T>(path: string, schema: z.ZodType<T>): Promise<T> {
     await this.assertFile(path);
     const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     let text: string;
@@ -241,7 +247,11 @@ export class FileRunStore {
   }
 
   private async writeJson<T>(path: string, value: T, schema: z.ZodType<T>): Promise<void> {
-    if (await this.assertFile(path, true)) await this.readJson(path, schema);
+    return this.withFile(path, () => this.writeJsonUnlocked(path, value, schema));
+  }
+
+  private async writeJsonUnlocked<T>(path: string, value: T, schema: z.ZodType<T>): Promise<void> {
+    if (await this.assertFile(path, true)) await this.readJsonUnlocked(path, schema);
     const temporary = join(dirname(path), `.${randomUUID()}.tmp`);
     const file = await open(
       temporary,
@@ -255,14 +265,51 @@ export class FileRunStore {
       } finally {
         await file.close();
       }
-      await this.assertFile(path, true);
-      await rename(temporary, path);
+      await this.replaceFile(temporary, path);
     } catch (error) {
       await this.assertDirectory(dirname(temporary));
       await unlink(temporary).catch((cleanupError: unknown) => {
         if (errorCode(cleanupError) !== 'ENOENT') throw cleanupError;
       });
       throw error;
+    }
+  }
+
+  /** Polling readers must close their handles before an atomic replacement on Windows. */
+  private async withFile<T>(path: string, action: () => Promise<T>): Promise<T> {
+    const key = process.platform === 'win32' ? path.toLowerCase() : path;
+    const previous = this.fileOperations.get(key) ?? Promise.resolve();
+    const operation = previous.then(action);
+    const completed = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.fileOperations.set(key, completed);
+    try {
+      return await operation;
+    } finally {
+      if (this.fileOperations.get(key) === completed) this.fileOperations.delete(key);
+    }
+  }
+
+  private async replaceFile(temporary: string, path: string): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      // A separate CLI reader can briefly hold a Windows handle despite our local queue.
+      // Revalidate the destination on each retry; an invalid boundary is never retried.
+      await this.assertFile(path, true);
+      try {
+        await rename(temporary, path);
+        return;
+      } catch (error) {
+        if (
+          process.platform !== 'win32' ||
+          !['EPERM', 'EACCES'].includes(errorCode(error) ?? '') ||
+          attempt >= 7
+        ) {
+          throw error;
+        }
+        await delay(10 * 2 ** attempt);
+      }
     }
   }
 
