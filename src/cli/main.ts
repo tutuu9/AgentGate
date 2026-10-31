@@ -15,6 +15,7 @@ import { CodexSandbox } from '../adapters/sandbox.ts';
 import { GitHubCli } from '../adapters/github.ts';
 import { execute } from '../adapters/process.ts';
 import { TerminalInteraction } from './terminal.ts';
+import { startWebServer } from '../web/server.ts';
 
 const HELP = `AgentGate 0.1.0-dev.0 — human-approved Issue-to-PR workflows
 
@@ -26,6 +27,7 @@ Usage:
   agentgate inspect <run-id> [--json]
   agentgate resume <run-id>
   agentgate cleanup <run-id>
+  agentgate web [--port <port>]
 
 Options:
   --home <path>   State directory (default: AGENTGATE_HOME or ~/.agentgate)
@@ -35,6 +37,11 @@ Run/resume options:
   --model <id>                 Explicit Codex model identifier
   --reasoning-effort <effort>   low, medium, high, xhigh, or max
 Model options apply to this invocation only; repeat them when resuming a run.
+
+Web options:
+  --port <port>   Local IPv4 loopback port (default: 0, choose a free port)
+The web interface uses browser approvals and does not require a terminal.
+Repository registration, check configuration, and cleanup remain CLI commands.
 
 Requires Node.js 24, Git, GitHub CLI, and a verified Codex sandbox.
 Run/repo add/resume/cleanup require an interactive terminal; there is no --yes bypass.
@@ -59,6 +66,7 @@ export async function main(argv: string[]): Promise<number> {
       checks: { type: 'string' },
       model: { type: 'string' },
       'reasoning-effort': { type: 'string' },
+      port: { type: 'string' },
     },
   });
   if (values.help || !positionals.length) {
@@ -68,8 +76,18 @@ export async function main(argv: string[]): Promise<number> {
   if (process.versions.node.split('.')[0] !== '24')
     throw new Error('AgentGate requires Node.js 24.');
   const command = positionals[0];
-  if (!['doctor', 'repo', 'run', 'status', 'inspect', 'resume', 'cleanup'].includes(command!))
+  if (
+    !['doctor', 'repo', 'run', 'status', 'inspect', 'resume', 'cleanup', 'web'].includes(command!)
+  )
     throw new Error(`Unknown command: ${command}. Use --help.`);
+  if (values.port !== undefined && command !== 'web')
+    throw new Error('--port is only supported for web.');
+  const port = values.port === undefined ? 0 : parsePort(values.port);
+  if (
+    command === 'web' &&
+    (positionals.length !== 1 || values.repo || values.name || values.checks || values.json)
+  )
+    throw new Error('Use: agentgate web [--port <port>] [--home <path>]');
   if (
     (values.model !== undefined || values['reasoning-effort'] !== undefined) &&
     command !== 'run' &&
@@ -94,6 +112,33 @@ export async function main(argv: string[]): Promise<number> {
   let ui: TerminalInteraction | undefined;
   try {
     await store.init();
+    if (command === 'web') {
+      abort.signal.throwIfAborted();
+      const server = await startWebServer({
+        store,
+        sandbox,
+        git,
+        port,
+        createAgent: (selection) =>
+          new CodexRunner({
+            home,
+            codexPath: process.env.AGENTGATE_CODEX_PATH,
+            ...selection,
+          }),
+      });
+      try {
+        show(
+          `Open this private local link in your browser:\n${server.url}\nKeep this terminal running. Ctrl+C stops the server and cancels active work.`,
+        );
+        await new Promise<void>((resolve) => {
+          if (abort.signal.aborted) resolve();
+          else abort.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+      } finally {
+        await server.close();
+      }
+      return 0;
+    }
     if (command === 'doctor') {
       return await withRunLock(store, async () => {
         const checks = [{ name: 'node', ok: true, detail: process.version }];
@@ -264,6 +309,11 @@ async function suggestedChecks(path: string) {
 function required(value: string | undefined, name: string): string {
   if (!value) throw new Error(`Missing ${name}. Use --help.`);
   return value;
+}
+function parsePort(value: string): number {
+  if (!/^\d{1,5}$/.test(value) || Number(value) > 65535)
+    throw new Error('--port must be an integer between 0 and 65535.');
+  return Number(value);
 }
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown error';

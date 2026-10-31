@@ -6,6 +6,7 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Added
 
+- Local browser workflow control with token-protected loopback HTTP, separate plan/commit/ordinary-PR decisions, cancellation and resume, and bundled assets in the npm package.
 - Local TypeScript CLI for explicit repository registration and GitHub Issue runs.
 - Separate approval of a structured plan and the exact candidate commit before publication.
 - Git worktrees, configured offline checks, independent read-only review, and one scoped repair attempt.

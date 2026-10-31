@@ -1,6 +1,6 @@
 # AgentGate
 
-A local TypeScript CLI that takes a selected GitHub Issue through an approved plan, isolated coding work, checks, review, and a separately approved pull request.
+A local TypeScript controller with CLI and browser interfaces that takes a selected GitHub Issue through an approved plan, isolated coding work, checks, review, and a separately approved pull request.
 
 **Status: implementation preview (`0.1.0-dev.0`). Real Windows MXC workflow and recovery acceptance passed. Linux workflows are blocked pending native cancellation and Node compatibility fixes. No stable release has been declared.** See the [acceptance record](docs/acceptance.md) for evidence and outstanding checks. Mocked adapter tests do not establish real isolation.
 
@@ -33,7 +33,7 @@ Linux diagnostics also require `/bin/bash` and `/usr/bin/cat` for their fixed pi
 
 Controller npm checks support the standard `node_modules/npm` installation layout. AgentGate validates that package and runs its selected entry point with the controller's Node.js 24. Only the npm package receives additional read access for those checks; an unsupported layout or a runtime inside the worktree/state directory is rejected.
 
-macOS, GitHub Enterprise hosts, cross-repository forks, hosted workers, webhooks, web UI, and Claude Code are not implemented in this preview.
+macOS, GitHub Enterprise hosts, cross-repository forks, hosted workers, webhooks, and Claude Code are not implemented in this preview.
 
 ## Install from source
 
@@ -109,7 +109,7 @@ Use a native Windows path when running in PowerShell. Registration suggests exis
 ]
 ```
 
-Commands and arguments are separate values, not shell snippets. Every listed check is mandatory; do not omit a required check just to obtain a green result. Registration and approvals require an interactive terminal and default to declining; there is no `--yes` bypass.
+Commands and arguments are separate values, not shell snippets. Every listed check is mandatory; do not omit a required check just to obtain a green result. Registration and CLI approvals require an interactive terminal and default to declining; there is no `--yes` bypass. The local web interface requests the same workflow decisions in the browser.
 
 To select the model and reasoning effort explicitly for every agent stage in a run:
 
@@ -123,6 +123,26 @@ These options apply to the current invocation; repeat them on `resume`. AgentGat
 After plan approval, the CLI shows the worktree and pauses for dependency preparation. Review dependency scripts before running an installer there, then confirm that the approved checks work offline. AgentGate does not install packages automatically or supply production secrets. Changes outside the approved path scope block progress rather than silently expanding the plan.
 
 On Windows, agent and check Node processes receive fixed `--preserve-symlinks --preserve-symlinks-main` options so script loading works without reading denied ancestor-directory metadata. Caller-supplied `NODE_OPTIONS` are discarded. This changes module identity for linked packages; projects using linked native modules need their own compatibility checks.
+
+## Use the local web interface
+
+Register repositories and their mandatory checks with `agentgate repo add`, then start:
+
+```sh
+agentgate web
+# Optional fixed port and state home:
+agentgate web --port 4317 --home /absolute/path/to/agentgate-state
+```
+
+Open the private link printed in the terminal. The server binds only to `127.0.0.1`; the default port `0` chooses a free port. Keep it running while using the browser. Starting the server does not run a doctor, invoke a model, or start a workflow, and does not require an interactive terminal. The same native preflight still runs before every workflow start or resume; Linux workflows remain blocked.
+
+The browser lists registered repositories and saved runs. Start an issue by URL, optionally select a model and reasoning effort, and review each decision: approve or revise the plan, confirm that you prepared dependencies in the worktree, then inspect the diff, checks, review, exact commit, and proposed PR text before publication. Creating an ordinary PR when a draft is unavailable needs a separate decision. Registration, check configuration, authentication, and cleanup remain CLI tasks.
+
+The interface polls saved state without changing the Git index. During active work, a diff is available once the workflow presents it for publication approval. For an inactive run, **Inspect diff** takes the same exclusive lock used by the CLI. Another active controller or an uncertain shutdown blocks that inspection instead of modifying a live index.
+
+Reloading or closing a browser tab does not cancel work or answer a prompt. Use **Cancel operation**, or Ctrl+C in the server terminal, to request cancellation; unpublished work is preserved. After restarting the server, open its new link and explicitly resume a saved run. Existing durable approvals are revalidated by the core, and stale process locks require the documented manual recovery.
+
+The link contains a fresh per-server access token in its URL fragment. The page moves it to tab-scoped session storage and removes the fragment from the address bar. Treat the link as private: anyone who can use that token on this machine can control this server. API requests require the token; mutations also require the exact local Origin and JSON. Do not forward the port or publish the link. The browser never receives GitHub or model credentials. Untrusted issue, code, and report text is displayed as text rather than executable HTML.
 
 ## Inspect, resume, and clean up
 

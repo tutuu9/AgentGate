@@ -36,3 +36,4 @@ jobs:
           npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
           npm install --ignore-scripts --prefix "$RUNNER_TEMP/agentgate-package-smoke" "$RUNNER_TEMP"/agentgate-*.tgz
           node "$RUNNER_TEMP/agentgate-package-smoke/node_modules/agentgate/dist/cli/main.js" --help
+          node test/manual/verify-web-package.ts "$RUNNER_TEMP/agentgate-package-smoke/node_modules/agentgate/dist/cli/main.js"
