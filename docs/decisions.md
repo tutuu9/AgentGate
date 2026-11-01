@@ -26,7 +26,7 @@ These decisions describe the implementation preview and the agreed first-user wo
 
 **Consequences:** Windows is pinned to Codex CLI 0.166.0 and explicitly selects offline MXC; Linux retains 0.154.0. The initial Windows 0.154.0 elevated attempt failed read and loopback isolation. Enumerating existing directories or weakening the probes cannot replace a default-deny boundary, so legacy Windows backends are not used. Compatibility must be revalidated before expanding the version set. The preview requires explicit authentication in a dedicated profile and has no full-access or paid-API fallback. Docker is not a mandatory dependency. Real isolation acceptance remains a release gate.
 
-**Current limitation:** Linux is diagnostic-only and its workflow gate remains closed. Native cancellation and captured Node streams require fixes in #6 and #7. The maintainer paused automatic Native Linux CI while retaining these blockers and the ordinary code-quality checks.
+**Current limitation:** Linux is diagnostic-only and its workflow gate remains closed. Native lifecycle work in #6 now uses the supervision contract in ADR 007. Captured Node streams and combined acceptance remain blocked by #7. The earlier native-CI pause is followed by focused lifecycle checks; ordinary code-quality checks remain enabled.
 
 ## ADR 004: Two human approvals and one repair attempt
 
@@ -51,3 +51,11 @@ These decisions describe the implementation preview and the agreed first-user wo
 **Reason:** One source reduces divergent agent instructions and lets a human review the project's actual working agreements.
 
 **Consequences:** A separately installed personal `clean-code` skill is optional for contributors and is not distributed as an AgentGate runtime dependency. Its advice does not authorize wider refactoring or override repository conventions.
+
+## ADR 007: Linux cgroup lifecycle ownership
+
+**Decision:** Run each native Linux sandbox invocation under a dedicated systemd user service with a trusted Node supervisor, an explicit startup handshake, and verified cgroup completion. Require the supported Ubuntu/systemd/cgroup environment rather than silently falling back to process-group termination. Runtime performs no privileged host setup.
+
+**Reason:** The recorded native Codex descendant escaped its launcher's process group. A service cgroup owns descendants across session changes without adding the rejected outer PID namespace or relaxing the existing filesystem/network policy.
+
+**Consequences:** Supervisor metadata is controller-private, worker environments remain explicit, and stopped launchers or heartbeats do not establish completion. A retained failed service preserves invocation evidence until verification; its sentinel exit code is distinct from the command's result. Uncertain completion keeps the lock and runtime state. Linux workflows remain blocked until #7 and combined native acceptance pass. Fake-manager tests establish orchestration behavior only; the separate native workflow must supply OS evidence.

@@ -171,6 +171,12 @@ The dedicated native workflow uses a real Ubuntu runner and fresh unauthenticate
 - The maintainer then explicitly requested stopping this work, removing the separate Native Linux workflow and merging the implementation preview with follow-up issues. Ordinary Windows/Ubuntu CI remains enabled. Linux model/check execution remains blocked by `linux-workflow-support: false`; removing CI does not turn the failures into passes. Unverified filtering/cgroup prototypes were preserved locally and were not adopted.
 - Follow-up issues: [native descendant shutdown #6](https://github.com/tutuu9/AgentGate/issues/6) and [Node streams with network isolation #7](https://github.com/tutuu9/AgentGate/issues/7). Overall native acceptance [#1](https://github.com/tutuu9/AgentGate/issues/1) remains open; Windows workflow/recovery [#2](https://github.com/tutuu9/AgentGate/issues/2) is closed.
 
+### Linux lifecycle follow-up (#6)
+
+The maintainer authorized resuming #6 through GitHub Actions and requiring a prepared cgroup v2 environment. The new production launch path uses a systemd 255 user service, a trusted Node supervisor, private startup/completion records, and an exact owned-cgroup completion check. The former outer-PID-namespace experiment is replaced by a production-path lifecycle helper.
+
+The focused Native Linux lifecycle workflow separates shutdown/isolation observations from the #7 stream/toolchain compatibility job. It uses fresh unauthenticated profiles, no model calls, the pinned Codex 0.154.0, and the distro AppArmor prerequisite without changing the global restriction. Native results for this implementation must be recorded below after a real run; fake-manager tests and local Windows code-quality checks do not establish Linux isolation or shutdown acceptance. The mandatory `linux-workflow-support: false` gate remains in place.
+
 ### Remaining acceptance matrix
 
 | Criterion                                             | Recorded outcome                                                                                                                                                                                                | Status                                                                                        |
