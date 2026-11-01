@@ -727,7 +727,7 @@ test(
         { name: 'never', command: 'nonexistent-approved-command', args: [], timeoutMs: 1000 },
         join(directory, 'nonexistent-worktree'),
       ),
-      /Sandbox blocked: linux-workflow-support:.*cancellation.*captured Node/,
+      /Sandbox blocked: linux-workflow-support:.*captured Node.*combined workflow acceptance/,
     );
     assert.equal(physicalCalls, 4);
     const run = RunSchema.parse({
@@ -756,7 +756,7 @@ test(
     const runner = new CodexRunner(options);
     await assert.rejects(
       runner.run('plan', { run }),
-      /Codex execution blocked: linux-workflow-support:.*cancellation.*captured Node/,
+      /Codex execution blocked: linux-workflow-support:.*captured Node.*combined workflow acceptance/,
     );
     assert.equal(physicalCalls, 6);
     assert.deepEqual(await readdir(join(directory, 'runtime')), []);

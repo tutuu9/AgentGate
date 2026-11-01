@@ -34,4 +34,4 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 ### Status
 
 - Resume focused native Linux lifecycle checks for #6 while retaining ordinary Windows/Ubuntu CI and the Linux execution block. Report #7 compatibility failures separately without treating them as accepted Linux support.
-- Package version `0.1.0-dev.0` is an implementation preview. Windows MXC isolation, real Issue-to-draft-PR runs, and controlled workflow recovery passed. Linux filesystem/network isolation passed, but workflow execution remains blocked by native descendant cancellation and captured Node stream failures. No stable release or public npm publication is claimed.
+- Package version `0.1.0-dev.0` is an implementation preview. Windows MXC isolation, real Issue-to-draft-PR runs, and controlled workflow recovery passed. Linux filesystem/network isolation and six production lifecycle scenarios passed with systemd/cgroup supervision; captured Node stream compatibility and combined workflow acceptance remain blocked. No stable release or public npm publication is claimed.

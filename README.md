@@ -2,7 +2,7 @@
 
 A local TypeScript controller with CLI and browser interfaces that takes a selected GitHub Issue through an approved plan, isolated coding work, checks, review, and a separately approved pull request.
 
-**Status: implementation preview (`0.1.0-dev.0`). Real Windows MXC workflow and recovery acceptance passed. Linux workflows are blocked pending native cancellation and Node compatibility fixes. No stable release has been declared.** See the [acceptance record](docs/acceptance.md) for evidence and outstanding checks. Mocked adapter tests do not establish real isolation.
+**Status: implementation preview (`0.1.0-dev.0`). Real Windows MXC workflow and recovery acceptance passed. Native Linux lifecycle and physical isolation passed, but workflows remain blocked by Node compatibility and combined acceptance. No stable release has been declared.** See the [acceptance record](docs/acceptance.md) for evidence and outstanding checks. Mocked adapter tests do not establish real isolation.
 
 Windows uses explicit MXC isolation with networking disabled. The earlier legacy Windows attempt with Codex 0.154.0 failed the outside-file read and loopback-network boundaries; that backend is no longer selected. Every environment must pass the real probes before model execution. See the [acceptance record](docs/acceptance.md) for measured results.
 

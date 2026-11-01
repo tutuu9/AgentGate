@@ -101,7 +101,7 @@ function includeWorkflowSupport(checks: DoctorCheck[]): DoctorCheck[] {
       name: 'linux-workflow-support',
       ok: false,
       detail:
-        'Linux workflows are blocked: native descendant cancellation and captured Node child streams are not supported by the verified runtime. Physical diagnostics do not authorize execution.',
+        'Linux workflows are blocked: captured Node child streams and combined workflow acceptance remain unverified. Passing lifecycle or physical diagnostics does not authorize execution.',
     },
   ];
 }
