@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { hasUncertainTermination } from '../core/errors.ts';
+import { checkLinuxSupervision, executeLinuxSandbox } from './linux-supervisor.ts';
 import {
   CheckSchema,
   type CheckResult,
@@ -56,11 +57,12 @@ export interface SandboxSession {
   cleanup(): Promise<void>;
 }
 
-/** Native Linux descendants can leave the launcher's process group; stops remain unverified. */
+/** Native Linux launches require OS-owned supervision; injected executors prove no isolation. */
 export async function executeSandbox(
   options: ExecuteOptions,
   executor: Executor = execute,
 ): Promise<ExecuteResult> {
+  if (process.platform === 'linux' && executor === execute) return executeLinuxSandbox(options);
   try {
     return await executor(options);
   } catch (error) {
@@ -528,6 +530,11 @@ export class CodexSandbox implements SandboxRunner {
 
   async prerequisites(session: SandboxSession, signal?: AbortSignal): Promise<DoctorCheck[]> {
     const checks: DoctorCheck[] = [];
+    if (process.platform === 'linux' && this.executor === execute) {
+      const supervision = await checkLinuxSupervision(signal);
+      checks.push(supervision);
+      if (!supervision.ok) return checks;
+    }
     const command = async (args: string[]) => {
       signal?.throwIfAborted();
       const result = await this.executor({
