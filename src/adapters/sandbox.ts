@@ -6,6 +6,12 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { hasUncertainTermination } from '../core/errors.ts';
+import {
+  assertLinuxSandboxBoundaryUsed,
+  beginLinuxSandboxBoundaryInvocation,
+  checkLinuxNetworkFilter,
+  createLinuxSandboxBoundary,
+} from './linux-network-filter.ts';
 import { checkLinuxSupervision, executeLinuxSandbox } from './linux-supervisor.ts';
 import {
   CheckSchema,
@@ -62,7 +68,15 @@ export async function executeSandbox(
   options: ExecuteOptions,
   executor: Executor = execute,
 ): Promise<ExecuteResult> {
-  if (process.platform === 'linux' && executor === execute) return executeLinuxSandbox(options);
+  if (process.platform === 'linux' && executor === execute) {
+    if (!options.cwd) throw new ProcessError('spawn', 'A native sandbox launcher is required.');
+    const network = await checkLinuxNetworkFilter(options.signal);
+    if (!network.ok) throw new ProcessError('spawn', network.detail);
+    await beginLinuxSandboxBoundaryInvocation(options.cwd);
+    const result = await executeLinuxSandbox(options);
+    await assertLinuxSandboxBoundaryUsed(options.cwd, options.args.includes('sandbox'));
+    return result;
+  }
   try {
     return await executor(options);
   } catch (error) {
@@ -221,12 +235,19 @@ export async function createSandboxSession(
   const profile = `agentgate-${randomUUID()}`;
   const prefix = `permissions.${profile}`;
   const env = isolatedEnvironment(root, temporary);
+  const boundary = runtimeExecutable
+    ? await createLinuxSandboxBoundary(runtime, runtimeExecutable, env.PATH, launcher)
+    : undefined;
+  if (boundary) env.PATH = boundary.path;
   const filesystem: Record<string, string> = {
     ':root': 'deny',
     ':minimal': 'read',
     [launcher]: 'read',
     [temporary]: 'write',
     [dirname(process.execPath)]: 'read',
+    // State may live below a broader runtime/minimal read grant. Keep private control
+    // records denied explicitly; only the narrower launcher and temporary grants apply.
+    ...(process.platform === 'linux' ? { [root]: 'deny' } : {}),
     [join(root, 'codex')]: 'deny',
   };
   // Linux Codex re-executes itself after constructing the restricted filesystem view.
@@ -268,6 +289,7 @@ export async function createSandboxSession(
         throw new Error('Unsafe scratch cleanup path.');
       await canonicalDirectory(runtime);
       await canonicalDirectory(launcher);
+      await boundary?.cleanup();
       await rm(launcher, { recursive: true, force: true });
     },
   };
@@ -441,6 +463,7 @@ const ProbeSchema = z.object({
   loopback: z.boolean(),
   egress: z.boolean(),
   credentials: z.boolean(),
+  nodeStreams: z.boolean().optional(),
 });
 
 interface ProbePaths {
@@ -505,10 +528,40 @@ function probeScript(paths: ProbePaths): string {
 const p=${JSON.stringify(paths)};
 function attempt(fn){try{fn();return true}catch{return false}}
 function connect(host,port){return new Promise(resolve=>{const s=net.createConnection({host,port});const done=v=>{s.destroy();resolve(v)};s.setTimeout(2500,()=>done(false));s.once('connect',()=>done(true));s.once('error',()=>done(false))})}
+${process.platform === 'linux' ? linuxNodeStreamProbe() : ''}
 (async()=>{const result={readWorkspace:attempt(()=>fs.readFileSync(p.allowed)),writeWorkspace:attempt(()=>fs.writeFileSync(p.write,p.nonce,{flag:'wx'})),readSentinel:attempt(()=>fs.readFileSync(p.sentinel)),writeSentinel:attempt(()=>fs.writeFileSync(p.sentinel,p.nonce)),writeOutside:attempt(()=>fs.writeFileSync(p.outside,p.nonce,{flag:'wx'})),loopback:await connect('127.0.0.1',p.port),egress:await connect('1.1.1.1',443),credentials:['GH_TOKEN','GITHUB_TOKEN','OPENAI_API_KEY','CODEX_API_KEY','ANTHROPIC_API_KEY','SSH_AUTH_SOCK'].some(k=>Boolean(process.env[k]))};
+${process.platform === 'linux' ? 'result.nodeStreams=await nodeStreams();' : ''}
 fs.writeFileSync(p.ready+'.tmp',JSON.stringify({nonce:p.nonce,observation:result}),{flag:'wx'});fs.renameSync(p.ready+'.tmp',p.ready);
 const deadline=Date.now()+10000;while(!attempt(()=>{if(fs.readFileSync(p.proceed,'utf8')!==p.nonce)throw new Error()})){if(Date.now()>deadline)throw new Error();await new Promise(resolve=>setTimeout(resolve,25))}
 console.log(JSON.stringify(result))})().catch(()=>process.exit(2));`;
+}
+
+function linuxNodeStreamProbe(): string {
+  return String.raw`
+async function nodeStreams() {
+  const {spawnSync,spawn,fork}=require('node:child_process');
+  const input='node-stream-'+p.nonce;
+  const source="let input='',ended=false,message=null;process.stdin.setEncoding('utf8');process.stdin.on('data',value=>input+=value);function finish(){if(!ended||(process.send&&message===null))return;process.stdout.write('stdout:'+input);process.stderr.write('stderr:'+input);process.exitCode=37;if(process.send){process.send(message);process.disconnect()}}process.stdin.on('end',()=>{ended=true;finish()});if(process.send)process.on('message',value=>{message=value;finish()});";
+  const valid=value=>value.status===37&&value.signal===null&&!value.error&&value.stdout==='stdout:'+input&&value.stderr==='stderr:'+input;
+  const sync=spawnSync(process.execPath,['-e',source],{input,encoding:'utf8',timeout:3000,maxBuffer:8192});
+  if(!valid(sync)) return false;
+  function capture(child,ipc) {
+    return new Promise(resolve=>{
+      let stdout='',stderr='',error=false,message;
+      child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');
+      child.stdout.on('data',value=>stdout+=value);child.stderr.on('data',value=>stderr+=value);
+      for(const stream of [child.stdin,child.stdout,child.stderr])stream.on('error',()=>error=true);
+      child.on('error',()=>error=true);child.on('message',value=>message=value);
+      child.on('close',(status,signal)=>resolve(valid({status,signal,stdout,stderr,error})&&(!ipc||message===input)));
+      if(ipc)child.send(input,errorValue=>{if(errorValue)error=true});
+      child.stdin.end(input);
+    });
+  }
+  if(!await capture(spawn(process.execPath,['-e',source],{stdio:['pipe','pipe','pipe']}),false))return false;
+  const file=require('node:path').join(require('node:path').dirname(p.ready),'node-stream-child.cjs');
+  fs.writeFileSync(file,source,{flag:'wx',mode:0o600});
+  return capture(fork(file,[],{stdio:['pipe','pipe','pipe','ipc']}),true);
+}`;
 }
 
 export class CodexSandbox implements SandboxRunner {
@@ -534,6 +587,9 @@ export class CodexSandbox implements SandboxRunner {
       const supervision = await checkLinuxSupervision(signal);
       checks.push(supervision);
       if (!supervision.ok) return checks;
+      const network = await checkLinuxNetworkFilter(signal);
+      checks.push(network);
+      if (!network.ok) return checks;
     }
     const command = async (args: string[]) => {
       signal?.throwIfAborted();
@@ -849,6 +905,15 @@ export class CodexSandbox implements SandboxRunner {
                 ? 'Live probe blocked loopback and public TCP connections; controller baseline was reachable.'
                 : `The sandbox allowed a network connection; execution is blocked. Observed loopback=${p.loopback}, publicEgress=${p.egress}; controller baseline was reachable.`,
           });
+          if (process.platform === 'linux')
+            checks.push({
+              name: writable ? 'linux-node-streams-write' : 'linux-node-streams-read',
+              ok: p.nodeStreams === true,
+              detail:
+                p.nodeStreams === true
+                  ? 'Live Node sync/async capture and fork IPC preserved input, separate output streams, and exit status.'
+                  : 'Node child streams or fork IPC could not be verified; workflow execution is blocked.',
+            });
         } catch (error) {
           invocationFailed = true;
           invocationUncertain = hasUncertainTermination(error);

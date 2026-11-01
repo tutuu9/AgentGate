@@ -198,7 +198,15 @@ test('session policy separates controller state and grants only the chosen workt
   await mkdir(workspace);
   const session = await createSandboxSession(join(directory, 'home'), workspace, true);
   const codexHome = await realpath(join(directory, 'home', 'codex'));
+  const stateHome = await realpath(join(directory, 'home'));
   try {
+    if (process.platform === 'linux')
+      assert.ok(
+        session.configArgs.some((argument) =>
+          argument.includes(`${JSON.stringify(stateHome)}="deny"`),
+        ),
+        'Private state stays denied even beneath a broader runtime read grant.',
+      );
     assert.ok(session.configArgs.includes('project_root_markers=[]'));
     assert.ok(session.configArgs.includes('web_search="disabled"'));
     assert.ok(session.configArgs.some((argument) => argument.endsWith('.network.enabled=false')));
@@ -483,6 +491,10 @@ async function syntheticProbe(
     redirectedReport?: boolean;
   } = {},
 ) {
+  observation = {
+    ...(process.platform === 'linux' ? { nodeStreams: true } : {}),
+    ...observation,
+  };
   const script = options.args[options.args.indexOf('-e') + 1]!;
   const encoded = /\nconst p=(.+);\n/.exec(script);
   assert.ok(encoded, 'The fixed probe supplies fixture paths as JSON.');
@@ -683,85 +695,90 @@ test('native execution retains interrupted Linux errors as uncertain without mas
   assert.equal(await executeSandbox(options, async () => result), result);
 });
 
-test(
-  'Linux doctor blocks model stages and direct checks despite authenticated physical success',
-  { skip: process.platform !== 'linux' },
-  async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), 'agentgate-linux-workflow-blocked-'));
-    t.after(() => rm(directory, { recursive: true, force: true }));
-    const prerequisites = prerequisiteExecutor();
-    let physicalCalls = 0;
-    const options = {
-      codexPath: process.execPath,
-      home: directory,
-      connectivity: async () => true,
-      executor: async (options: ExecuteOptions) => {
-        assert.ok(!options.args.includes('exec'), 'A model command must never be launched.');
-        if (!options.args.includes('sandbox') || options.args.includes('--help'))
-          return prerequisites(options);
-        const script = options.args[options.args.indexOf('-e') + 1]!;
-        assert.ok(script.includes('const p='), 'A workflow/check command must never be launched.');
-        physicalCalls++;
-        return syntheticProbe(options, {
-          readWorkspace: true,
-          writeWorkspace: options.args.some((argument) => /workspace"="write"/.test(argument)),
-          readSentinel: false,
-          writeSentinel: true,
-          writeOutside: true,
-          loopback: false,
-          egress: false,
-          credentials: false,
-        });
-      },
-    };
-    const sandbox = new CodexSandbox(options);
-    const checks = await sandbox.doctor();
-    assert.equal(checks.find((check) => check.name === 'codex-auth')?.ok, true);
-    assert.deepEqual(
-      checks.filter((check) => !check.ok).map((check) => check.name),
-      ['linux-workflow-support'],
-    );
-    assert.equal(physicalCalls, 2);
-    await assert.rejects(
-      sandbox.check(
-        { name: 'never', command: 'nonexistent-approved-command', args: [], timeoutMs: 1000 },
-        join(directory, 'nonexistent-worktree'),
-      ),
-      /Sandbox blocked: linux-workflow-support:.*captured Node.*combined workflow acceptance/,
-    );
-    assert.equal(physicalCalls, 4);
-    const run = RunSchema.parse({
-      schemaVersion: 1,
-      id: 'b12e820a-6398-4448-9f80-de5b073a6d1a',
-      repo: {
-        name: 'fixture',
-        path: directory,
-        fullName: 'owner/repo',
-        baseBranch: 'main',
-        checks: [{ name: 'test', command: 'npm', args: ['test'], timeoutMs: 1000 }],
-      },
-      issue: {
-        url: 'https://github.com/owner/repo/issues/1',
-        number: 1,
-        title: 'Fixture',
-        body: '',
-      },
-      baseCommit: 'a'.repeat(40),
-      branch: 'agentgate/fixture',
-      worktree: directory,
-      status: 'planning',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-    const runner = new CodexRunner(options);
-    await assert.rejects(
-      runner.run('plan', { run }),
-      /Codex execution blocked: linux-workflow-support:.*captured Node.*combined workflow acceptance/,
-    );
-    assert.equal(physicalCalls, 6);
-    assert.deepEqual(await readdir(join(directory, 'runtime')), []);
-  },
-);
+for (const nodeStreams of [false, undefined])
+  test(
+    `Linux doctor blocks stages and checks when Node stream evidence is ${String(nodeStreams)}`,
+    { skip: process.platform !== 'linux' },
+    async (t) => {
+      const directory = await mkdtemp(join(tmpdir(), 'agentgate-linux-workflow-blocked-'));
+      t.after(() => rm(directory, { recursive: true, force: true }));
+      const prerequisites = prerequisiteExecutor();
+      let physicalCalls = 0;
+      const options = {
+        codexPath: process.execPath,
+        home: directory,
+        connectivity: async () => true,
+        executor: async (options: ExecuteOptions) => {
+          assert.ok(!options.args.includes('exec'), 'A model command must never be launched.');
+          if (!options.args.includes('sandbox') || options.args.includes('--help'))
+            return prerequisites(options);
+          const script = options.args[options.args.indexOf('-e') + 1]!;
+          assert.ok(
+            script.includes('const p='),
+            'A workflow/check command must never be launched.',
+          );
+          physicalCalls++;
+          return syntheticProbe(options, {
+            readWorkspace: true,
+            writeWorkspace: options.args.some((argument) => /workspace"="write"/.test(argument)),
+            readSentinel: false,
+            writeSentinel: true,
+            writeOutside: true,
+            loopback: false,
+            egress: false,
+            credentials: false,
+            nodeStreams,
+          });
+        },
+      };
+      const sandbox = new CodexSandbox(options);
+      const checks = await sandbox.doctor();
+      assert.equal(checks.find((check) => check.name === 'codex-auth')?.ok, true);
+      assert.deepEqual(
+        checks.filter((check) => !check.ok).map((check) => check.name),
+        ['linux-node-streams-read', 'linux-node-streams-write', 'linux-workflow-support'],
+      );
+      assert.equal(physicalCalls, 2);
+      await assert.rejects(
+        sandbox.check(
+          { name: 'never', command: 'nonexistent-approved-command', args: [], timeoutMs: 1000 },
+          join(directory, 'nonexistent-worktree'),
+        ),
+        /Sandbox blocked: linux-node-streams-read:.*Node child streams or fork IPC/,
+      );
+      assert.equal(physicalCalls, 4);
+      const run = RunSchema.parse({
+        schemaVersion: 1,
+        id: 'b12e820a-6398-4448-9f80-de5b073a6d1a',
+        repo: {
+          name: 'fixture',
+          path: directory,
+          fullName: 'owner/repo',
+          baseBranch: 'main',
+          checks: [{ name: 'test', command: 'npm', args: ['test'], timeoutMs: 1000 }],
+        },
+        issue: {
+          url: 'https://github.com/owner/repo/issues/1',
+          number: 1,
+          title: 'Fixture',
+          body: '',
+        },
+        baseCommit: 'a'.repeat(40),
+        branch: 'agentgate/fixture',
+        worktree: directory,
+        status: 'planning',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      const runner = new CodexRunner(options);
+      await assert.rejects(
+        runner.run('plan', { run }),
+        /Codex execution blocked: linux-node-streams-read:.*Node child streams or fork IPC/,
+      );
+      assert.equal(physicalCalls, 6);
+      assert.deepEqual(await readdir(join(directory, 'runtime')), []);
+    },
+  );
 
 test('doctor rejects the other platform contract before executing a sandbox command', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'agentgate-platform-version-'));
