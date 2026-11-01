@@ -19,6 +19,8 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Fixed
 
+- Add an offline Linux Node IPC boundary and live stream/fork checks, with combined native compatibility and lifecycle acceptance. Preserve filesystem restrictions and deny host network/Unix-socket access; Linux remains blocked until the candidate passes all mandatory native checks.
+
 - Supervise native Linux sandbox launches with private systemd user services and cgroup completion checks; preserve uncertain shutdown state and the original failure cause. Linux workflows remain blocked pending Node compatibility and combined native acceptance.
 - Block Linux workflows after native cancellation and captured Node stream failures; retain state after unverified native stops.
 - Resolve controller npm checks once and grant Linux checks read access only to the validated npm runtime package.

@@ -59,3 +59,11 @@ These decisions describe the implementation preview and the agreed first-user wo
 **Reason:** The recorded native Codex descendant escaped its launcher's process group. A service cgroup owns descendants across session changes without adding the rejected outer PID namespace or relaxing the existing filesystem/network policy.
 
 **Consequences:** Supervisor metadata is controller-private, worker environments remain explicit, and stopped launchers or heartbeats do not establish completion. A retained failed service preserves invocation evidence until verification; its sentinel exit code is distinct from the command's result. Uncertain completion keeps the lock and runtime state. Linux workflows remain blocked until #7 and combined native acceptance pass. Fake-manager tests establish orchestration behavior only; the separate native workflow must supply OS evidence.
+
+## ADR 008: Offline Linux Node IPC without a managed proxy
+
+**Decision:** Preserve Codex 0.154.0's restricted filesystem and isolated network namespace, and adapt its pinned bubblewrap invocation with a private, validated launcher and an inherited syscall filter. Permit anonymous Unix stream/seqpacket pairs used by Node while denying network sockets and retargetable datagram/raw pairs.
+
+**Reason:** The original restricted filter prevents Node from inspecting and shutting down its subprocess sockets. Managed proxy mode restores streams but introduces host Unix-socket escapes and policy-dependent network decisions. A separate offline boundary avoids relying on proxy approvals, mutable allowlists, or DNS resolution.
+
+**Consequences:** The initial implementation requires Linux x86_64, distro Python 3.12, and bubblewrap 0.9 alongside the existing supervision prerequisites. Unknown invocation shapes are rejected. The configured permission profile remains offline; only the validated inner helper's redundant network filter is suppressed after the outer boundary is fixed. Native stream, socket, filesystem, credential, toolchain, and lifecycle observations must all pass before Linux workflows can be enabled. The existing Linux gate remains closed while that acceptance is pending.
