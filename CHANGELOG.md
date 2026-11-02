@@ -35,5 +35,5 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Status
 
-- Resumed native Linux CI jointly checks lifecycle #6 and Node/network compatibility #7. Both jobs and ordinary Windows/Ubuntu CI passed for the pre-enable candidate on 2026-11-02; Windows passed an unchanged retry after an initial fixture timeout. Final-head validation is tracked in [PR #12 checks](https://github.com/tutuu9/AgentGate/pull/12/checks).
+- All seven native Windows/Linux acceptance criteria in #1 are fulfilled after merging #6 and #7. [Native acceptance on main](https://github.com/tutuu9/AgentGate/actions/runs/41404729439) and [ordinary Windows/Ubuntu CI](https://github.com/tutuu9/AgentGate/actions/runs/41403589070) passed at `fab2054` on 2026-11-02. Historical failed candidates and the unchanged Windows retry remain recorded separately.
 - Package version `0.1.0-dev.0` is an implementation preview. Windows MXC isolation, real Issue-to-draft-PR runs, and controlled workflow recovery passed. Linux native filesystem/network isolation, six lifecycle scenarios, captured Node streams/fork IPC, and offline toolchain diagnostics passed in the recorded environment. No authenticated Linux workflow, stable release, or public npm publication is claimed.
