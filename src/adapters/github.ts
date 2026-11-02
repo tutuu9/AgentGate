@@ -124,15 +124,86 @@ function sensitivePath(path: string): boolean {
   );
 }
 
-function containsSecret(value: string): boolean {
-  return (
+function containsSecret(value: string, path: string): boolean {
+  if (
     /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----|\b(?:gh[pousr]_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9_]{20,}|AKIA[A-Z0-9]{16}|sk-(?:proj-|ant-)?[a-zA-Z0-9_-]{20,})\b/.test(
       value,
-    ) ||
-    (/(?:password|secret|api[_-]?key|access[_-]?token)\s*[=:]\s*["']?([^\s"'<>]{12,})/i.test(
-      value,
-    ) &&
-      !/(?:placeholder|your[_-]|example|replace[_-]|changeme|process\.env|\$\{)/i.test(value))
+    )
+  )
+    return true;
+
+  const codeSyntax = /\.(?:[cm]?[jt]sx?|json)$/i.test(path);
+  const assignments =
+    /(?:password|secret|api[_-]?key|access[_-]?token)["']?\s*(?::\s*string\s*=|[=:])[ \t]*(?:[\r\n][ \t\r\n]*(?=["'`]))?/gi;
+  for (;;) {
+    const assignment = assignments.exec(value);
+    if (!assignment) return false;
+    const { expression, end } = credentialExpression(value, assignments.lastIndex, codeSyntax);
+    assignments.lastIndex = end;
+    const literal =
+      /^(?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`)$/.test(expression);
+    const candidate = literal ? expression.slice(1, -1) : expression;
+    if (candidate.length < 12 || credentialPlaceholder(candidate)) continue;
+    if (
+      !literal &&
+      /^process\.env(?:\.[A-Za-z_][A-Za-z0-9_]*|\[(?:"[A-Za-z_][A-Za-z0-9_]*"|'[A-Za-z_][A-Za-z0-9_]*')\])$/.test(
+        expression,
+      )
+    )
+      continue;
+    return true;
+  }
+}
+
+function credentialExpression(
+  text: string,
+  start: number,
+  codeSyntax: boolean,
+): { expression: string; end: number } {
+  const closing: string[] = [];
+  // Bare configuration values can contain punctuation that delimits code expressions.
+  const bareConfig = !codeSyntax && !'"\'`'.includes(text[start] ?? '\n');
+  let quote = '';
+  let end = start;
+  for (; end < text.length; end++) {
+    const character = text[end]!;
+    if (quote) {
+      if (character === '\\') end++;
+      else if (character === quote) quote = '';
+      continue;
+    }
+    if ('\r\n'.includes(character)) break;
+    if (
+      closing.length === 0 &&
+      (end === start || /\s/.test(text[end - 1]!)) &&
+      (character === '#' || text.startsWith('//', end))
+    )
+      break;
+    if (bareConfig) continue;
+    if ('"\'`'.includes(character)) {
+      quote = character;
+      continue;
+    }
+    const opening = '([{'.indexOf(character);
+    if (opening !== -1) {
+      closing.push(')]}'[opening]!);
+      continue;
+    }
+    if (')]}'.includes(character)) {
+      if (closing.at(-1) !== character) break;
+      closing.pop();
+      continue;
+    }
+    if (closing.length === 0 && ',;'.includes(character)) break;
+  }
+  return { expression: text.slice(start, end).trim(), end };
+}
+
+function credentialPlaceholder(value: string): boolean {
+  if (/^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/.test(value)) return true;
+  const placeholder = /^<[^<>]*>$/.test(value) ? value.slice(1, -1) : value;
+  return /^(?:placeholder|example|change[_-]?me|replace[_-]me|(?:your|example|placeholder|replace[_-]with[_-]your)[_-](?:password|secret|api[_-]?key|access[_-]?token)(?:[_-]here)?)$/i.test(
+    placeholder,
   );
 }
 
@@ -534,7 +605,7 @@ export class GitHubCli implements GitHubGateway {
     if (!stat.isFile()) throw new Error(`Unsupported changed file: ${path}`);
     if (stat.size > 10 * 1024 * 1024)
       throw new Error(`File exceeds the 10 MiB publication inspection limit: ${path}`);
-    if (containsSecret((await readFile(target)).toString('utf8')))
+    if (containsSecret((await readFile(target)).toString('utf8'), path))
       throw new Error(`Potential secret detected in: ${path}`);
   }
 

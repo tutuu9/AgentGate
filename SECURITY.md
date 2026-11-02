@@ -27,6 +27,8 @@ State under `AGENTGATE_HOME` may contain private Issue text, repository paths, p
 
 Storage redacts recognized token formats, sensitive environment values, and credential fields recursively. Raw reasoning fields/events are omitted and raw Codex JSONL is discarded after parsing the final structured response. Redaction is heuristic and does not certify that arbitrary text is secret-free.
 
+Before staging changed files, publication inspection rejects sensitive paths, recognized credential formats, and suspicious credential assignments. Explicit example values and environment references are supported. This inspection is heuristic, not a complete parser or a guarantee that arbitrary source, expressions, or encodings are secret-free; manually review the diff before approving publication.
+
 Never copy production `.env` files, SSH keys, cloud credentials, or authentication caches into worktrees. Dependency installation is a separate user action outside the agent workflow; review package lifecycle scripts before running it. Checks requiring secrets, network services, or downloads are unavailable in the current offline profile and must not be silently omitted.
 
 Unpublished work is not automatically deleted. Explicit cleanup is limited to completed published runs and preserves the branch and PR. If a credential was exposed, revoke it with its provider and inspect every location that may contain it; removing a local log or adding a `.gitignore` rule is not sufficient.
