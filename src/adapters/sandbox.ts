@@ -214,6 +214,7 @@ export async function createSandboxSession(
   codexExecutable?: string,
   npmExecutable?: string,
 ): Promise<SandboxSession> {
+  if (process.platform === 'linux') await assertPrivateLinuxState(resolve(home), worktree);
   const root = await canonicalDirectory(resolve(home), true);
   const runtime = join(root, 'runtime');
   for (const owned of [root, runtime, join(root, 'codex')]) {
@@ -245,9 +246,6 @@ export async function createSandboxSession(
     [launcher]: 'read',
     [temporary]: 'write',
     [dirname(process.execPath)]: 'read',
-    // State may live below a broader runtime/minimal read grant. Keep private control
-    // records denied explicitly; only the narrower launcher and temporary grants apply.
-    ...(process.platform === 'linux' ? { [root]: 'deny' } : {}),
     [join(root, 'codex')]: 'deny',
   };
   // Linux Codex re-executes itself after constructing the restricted filesystem view.
@@ -293,6 +291,39 @@ export async function createSandboxSession(
       await rm(launcher, { recursive: true, force: true });
     },
   };
+}
+
+async function assertPrivateLinuxState(home: string, worktree?: string): Promise<void> {
+  // Codex 0.154.0 masks denied parents after read mounts, so a parent deny would
+  // also hide the launcher. Keep state outside broad grants instead of relying
+  // on nested deny/read exceptions that this backend cannot preserve.
+  const grants = [
+    '/bin',
+    '/sbin',
+    '/usr',
+    '/etc',
+    '/lib',
+    '/lib64',
+    '/nix/store',
+    '/run/current-system/sw',
+    dirname(process.execPath),
+    ...(worktree ? [resolve(worktree)] : []),
+  ];
+  for (const grant of grants) {
+    let canonical = grant;
+    try {
+      canonical = await realpath(grant);
+    } catch (error) {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+    }
+    for (const readable of [grant, canonical]) {
+      const child = relative(readable, home);
+      if (!child || (!isAbsolute(child) && child !== '..' && !child.startsWith(`..${sep}`)))
+        throw new Error(
+          'Linux AgentGate state must be outside sandbox runtime and worktree grants.',
+        );
+    }
+  }
 }
 
 /** Resolve approved check commands once; Linux npm uses the pinned controller Node runtime. */

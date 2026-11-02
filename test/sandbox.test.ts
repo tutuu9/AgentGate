@@ -13,7 +13,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir, userInfo } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { CodexRunner } from '../src/adapters/codex.ts';
@@ -198,15 +198,7 @@ test('session policy separates controller state and grants only the chosen workt
   await mkdir(workspace);
   const session = await createSandboxSession(join(directory, 'home'), workspace, true);
   const codexHome = await realpath(join(directory, 'home', 'codex'));
-  const stateHome = await realpath(join(directory, 'home'));
   try {
-    if (process.platform === 'linux')
-      assert.ok(
-        session.configArgs.some((argument) =>
-          argument.includes(`${JSON.stringify(stateHome)}="deny"`),
-        ),
-        'Private state stays denied even beneath a broader runtime read grant.',
-      );
     assert.ok(session.configArgs.includes('project_root_markers=[]'));
     assert.ok(session.configArgs.includes('web_search="disabled"'));
     assert.ok(session.configArgs.some((argument) => argument.endsWith('.network.enabled=false')));
@@ -232,6 +224,28 @@ test('session policy separates controller state and grants only the chosen workt
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test(
+  'Linux refuses state inside readable runtime or workspace grants',
+  {
+    skip: process.platform !== 'linux',
+  },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agentgate-state-grant-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    for (const home of [
+      join('/usr', 'agentgate-private-state'),
+      join(dirname(process.execPath), 'agentgate-private-state'),
+      join(directory, 'state'),
+    ]) {
+      await assert.rejects(
+        createSandboxSession(home, directory),
+        /state must be outside sandbox runtime and worktree grants/,
+      );
+    }
+    assert.deepEqual(await readdir(directory), [], 'Refusal must precede state creation.');
+  },
+);
 
 async function npmFixture(prefix: string) {
   const directory = join(prefix, 'node_modules', 'npm');
