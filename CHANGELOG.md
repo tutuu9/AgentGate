@@ -19,8 +19,10 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Fixed
 
-- Supervise native Linux sandbox launches with private systemd user services and cgroup completion checks; preserve uncertain shutdown state and the original failure cause. Linux workflows remain blocked pending Node compatibility and combined native acceptance.
-- Block Linux workflows after native cancellation and captured Node stream failures; retain state after unverified native stops.
+- Preserve Linux nested Node streams and fork IPC with an offline syscall boundary, retaining filesystem restrictions and denying host network/Unix-socket access. Enable supported Linux workflows after combined native and ordinary CI acceptance, subject to live preflight and separate authentication.
+- Reject Linux state placement beneath sandbox-readable runtime or worktree roots so private boundary and supervision records remain inaccessible.
+- Supervise native Linux sandbox launches with private systemd user services and cgroup completion checks; preserve uncertain shutdown state and the original failure cause.
+- Block Linux workflows when required runtime or live isolation checks fail; retain state after unverified native stops.
 - Resolve controller npm checks once and grant Linux checks read access only to the validated npm runtime package.
 - Verify sandbox writes against live and post-exit host observations, including unchanged outside canaries and actual workspace writes.
 - Preserve Linux sandbox command output with real POSIX pipes while retaining the network syscall restrictions.
@@ -33,5 +35,5 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Status
 
-- Resume focused native Linux lifecycle checks for #6 while retaining ordinary Windows/Ubuntu CI and the Linux execution block. Report #7 compatibility failures separately without treating them as accepted Linux support.
-- Package version `0.1.0-dev.0` is an implementation preview. Windows MXC isolation, real Issue-to-draft-PR runs, and controlled workflow recovery passed. Linux filesystem/network isolation and six production lifecycle scenarios passed with systemd/cgroup supervision; captured Node stream compatibility and combined workflow acceptance remain blocked. No stable release or public npm publication is claimed.
+- Resumed native Linux CI jointly checks lifecycle #6 and Node/network compatibility #7. Both jobs and ordinary Windows/Ubuntu CI passed for the pre-enable candidate on 2026-11-02; Windows passed an unchanged retry after an initial fixture timeout. Final-head validation is tracked in [PR #12 checks](https://github.com/tutuu9/AgentGate/pull/12/checks).
+- Package version `0.1.0-dev.0` is an implementation preview. Windows MXC isolation, real Issue-to-draft-PR runs, and controlled workflow recovery passed. Linux native filesystem/network isolation, six lifecycle scenarios, captured Node streams/fork IPC, and offline toolchain diagnostics passed in the recorded environment. No authenticated Linux workflow, stable release, or public npm publication is claimed.

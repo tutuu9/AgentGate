@@ -26,7 +26,7 @@ These decisions describe the implementation preview and the agreed first-user wo
 
 **Consequences:** Windows is pinned to Codex CLI 0.166.0 and explicitly selects offline MXC; Linux retains 0.154.0. The initial Windows 0.154.0 elevated attempt failed read and loopback isolation. Enumerating existing directories or weakening the probes cannot replace a default-deny boundary, so legacy Windows backends are not used. Compatibility must be revalidated before expanding the version set. The preview requires explicit authentication in a dedicated profile and has no full-access or paid-API fallback. Docker is not a mandatory dependency. Real isolation acceptance remains a release gate.
 
-**Current limitation:** Linux is diagnostic-only and its workflow gate remains closed. Native lifecycle work in #6 now uses the supervision contract in ADR 007. Captured Node streams and combined acceptance remain blocked by #7. The earlier native-CI pause is followed by focused lifecycle checks; ordinary code-quality checks remain enabled.
+**Current support:** Linux execution is enabled on the documented environment when all live preflight checks and separate authentication pass. Combined native lifecycle and Node/network compatibility checks and ordinary Windows/Ubuntu CI passed for the pre-enable candidate on 2026-11-02 using ADRs 007 and 008. This evidence contains no authenticated Linux workflow or model invocation. Native and ordinary code-quality CI remain enabled.
 
 ## ADR 004: Two human approvals and one repair attempt
 
@@ -58,4 +58,12 @@ These decisions describe the implementation preview and the agreed first-user wo
 
 **Reason:** The recorded native Codex descendant escaped its launcher's process group. A service cgroup owns descendants across session changes without adding the rejected outer PID namespace or relaxing the existing filesystem/network policy.
 
-**Consequences:** Supervisor metadata is controller-private, worker environments remain explicit, and stopped launchers or heartbeats do not establish completion. A retained failed service preserves invocation evidence until verification; its sentinel exit code is distinct from the command's result. Uncertain completion keeps the lock and runtime state. Linux workflows remain blocked until #7 and combined native acceptance pass. Fake-manager tests establish orchestration behavior only; the separate native workflow must supply OS evidence.
+**Consequences:** Supervisor metadata is controller-private, worker environments remain explicit, and stopped launchers or heartbeats do not establish completion. A retained failed service preserves invocation evidence until verification; its sentinel exit code is distinct from the command's result. Uncertain completion keeps the lock and runtime state. The combined #6/#7 native checks passed; supported execution still requires live preflight and separate authentication. Fake-manager tests establish orchestration behavior only; the separate native workflow supplies OS evidence.
+
+## ADR 008: Offline Linux Node IPC without a managed proxy
+
+**Decision:** Preserve Codex 0.154.0's restricted filesystem and isolated network namespace, and adapt its pinned bubblewrap invocation with a private, validated launcher and an inherited syscall filter. Permit anonymous Unix stream/seqpacket pairs used by Node while denying network sockets and retargetable datagram/raw pairs.
+
+**Reason:** The original restricted filter prevents Node from inspecting and shutting down its subprocess sockets. Managed proxy mode restores streams but introduces host Unix-socket escapes and policy-dependent network decisions. A separate offline boundary avoids relying on proxy approvals, mutable allowlists, or DNS resolution.
+
+**Consequences:** The initial implementation requires Linux x86_64, distro Python 3.12, and bubblewrap 0.9 alongside the existing supervision prerequisites. Unknown invocation shapes are rejected. The configured permission profile remains offline; only the validated inner helper's redundant network filter is suppressed after the outer boundary is fixed. State beneath broader sandbox read grants is rejected before session creation: masking a parent would also hide the read-only launcher in the pinned backend. Native stream, socket, filesystem, credential, toolchain, and lifecycle observations passed together on 2026-11-02. Linux support now depends on successful live checks rather than an unconditional platform block; no authenticated Linux workflow is claimed.

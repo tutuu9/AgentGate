@@ -6,6 +6,12 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { hasUncertainTermination } from '../core/errors.ts';
+import {
+  assertLinuxSandboxBoundaryUsed,
+  beginLinuxSandboxBoundaryInvocation,
+  checkLinuxNetworkFilter,
+  createLinuxSandboxBoundary,
+} from './linux-network-filter.ts';
 import { checkLinuxSupervision, executeLinuxSandbox } from './linux-supervisor.ts';
 import {
   CheckSchema,
@@ -62,7 +68,15 @@ export async function executeSandbox(
   options: ExecuteOptions,
   executor: Executor = execute,
 ): Promise<ExecuteResult> {
-  if (process.platform === 'linux' && executor === execute) return executeLinuxSandbox(options);
+  if (process.platform === 'linux' && executor === execute) {
+    if (!options.cwd) throw new ProcessError('spawn', 'A native sandbox launcher is required.');
+    const network = await checkLinuxNetworkFilter(options.signal);
+    if (!network.ok) throw new ProcessError('spawn', network.detail);
+    await beginLinuxSandboxBoundaryInvocation(options.cwd);
+    const result = await executeLinuxSandbox(options);
+    await assertLinuxSandboxBoundaryUsed(options.cwd, options.args.includes('sandbox'));
+    return result;
+  }
   try {
     return await executor(options);
   } catch (error) {
@@ -95,13 +109,25 @@ export async function executeSandbox(
 
 function includeWorkflowSupport(checks: DoctorCheck[]): DoctorCheck[] {
   if (process.platform !== 'linux') return checks;
+  const isolationChecks = [
+    'sandbox-read',
+    'sandbox-read-network',
+    'sandbox-write',
+    'sandbox-write-network',
+    'linux-node-streams-read',
+    'linux-node-streams-write',
+  ];
+  const supported =
+    isolationChecks.every((name) => checks.some((check) => check.name === name && check.ok)) &&
+    checks.every((check) => check.ok || check.name === 'codex-auth');
   return [
     ...checks,
     {
       name: 'linux-workflow-support',
-      ok: false,
-      detail:
-        'Linux workflows are blocked: captured Node child streams and combined workflow acceptance remain unverified. Passing lifecycle or physical diagnostics does not authorize execution.',
+      ok: supported,
+      detail: supported
+        ? 'Supported Linux sandbox boundaries and Node IPC verified; authentication is checked separately.'
+        : 'Linux workflows require all runtime, filesystem, network, and Node IPC checks to pass.',
     },
   ];
 }
@@ -200,6 +226,7 @@ export async function createSandboxSession(
   codexExecutable?: string,
   npmExecutable?: string,
 ): Promise<SandboxSession> {
+  if (process.platform === 'linux') await assertPrivateLinuxState(resolve(home), worktree);
   const root = await canonicalDirectory(resolve(home), true);
   const runtime = join(root, 'runtime');
   for (const owned of [root, runtime, join(root, 'codex')]) {
@@ -221,6 +248,10 @@ export async function createSandboxSession(
   const profile = `agentgate-${randomUUID()}`;
   const prefix = `permissions.${profile}`;
   const env = isolatedEnvironment(root, temporary);
+  const boundary = runtimeExecutable
+    ? await createLinuxSandboxBoundary(runtime, runtimeExecutable, env.PATH, launcher)
+    : undefined;
+  if (boundary) env.PATH = boundary.path;
   const filesystem: Record<string, string> = {
     ':root': 'deny',
     ':minimal': 'read',
@@ -268,9 +299,43 @@ export async function createSandboxSession(
         throw new Error('Unsafe scratch cleanup path.');
       await canonicalDirectory(runtime);
       await canonicalDirectory(launcher);
+      await boundary?.cleanup();
       await rm(launcher, { recursive: true, force: true });
     },
   };
+}
+
+async function assertPrivateLinuxState(home: string, worktree?: string): Promise<void> {
+  // Codex 0.154.0 masks denied parents after read mounts, so a parent deny would
+  // also hide the launcher. Keep state outside broad grants instead of relying
+  // on nested deny/read exceptions that this backend cannot preserve.
+  const grants = [
+    '/bin',
+    '/sbin',
+    '/usr',
+    '/etc',
+    '/lib',
+    '/lib64',
+    '/nix/store',
+    '/run/current-system/sw',
+    dirname(process.execPath),
+    ...(worktree ? [resolve(worktree)] : []),
+  ];
+  for (const grant of grants) {
+    let canonical = grant;
+    try {
+      canonical = await realpath(grant);
+    } catch (error) {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+    }
+    for (const readable of [grant, canonical]) {
+      const child = relative(readable, home);
+      if (!child || (!isAbsolute(child) && child !== '..' && !child.startsWith(`..${sep}`)))
+        throw new Error(
+          'Linux AgentGate state must be outside sandbox runtime and worktree grants.',
+        );
+    }
+  }
 }
 
 /** Resolve approved check commands once; Linux npm uses the pinned controller Node runtime. */
@@ -441,6 +506,7 @@ const ProbeSchema = z.object({
   loopback: z.boolean(),
   egress: z.boolean(),
   credentials: z.boolean(),
+  nodeStreams: z.boolean().optional(),
 });
 
 interface ProbePaths {
@@ -505,10 +571,40 @@ function probeScript(paths: ProbePaths): string {
 const p=${JSON.stringify(paths)};
 function attempt(fn){try{fn();return true}catch{return false}}
 function connect(host,port){return new Promise(resolve=>{const s=net.createConnection({host,port});const done=v=>{s.destroy();resolve(v)};s.setTimeout(2500,()=>done(false));s.once('connect',()=>done(true));s.once('error',()=>done(false))})}
+${process.platform === 'linux' ? linuxNodeStreamProbe() : ''}
 (async()=>{const result={readWorkspace:attempt(()=>fs.readFileSync(p.allowed)),writeWorkspace:attempt(()=>fs.writeFileSync(p.write,p.nonce,{flag:'wx'})),readSentinel:attempt(()=>fs.readFileSync(p.sentinel)),writeSentinel:attempt(()=>fs.writeFileSync(p.sentinel,p.nonce)),writeOutside:attempt(()=>fs.writeFileSync(p.outside,p.nonce,{flag:'wx'})),loopback:await connect('127.0.0.1',p.port),egress:await connect('1.1.1.1',443),credentials:['GH_TOKEN','GITHUB_TOKEN','OPENAI_API_KEY','CODEX_API_KEY','ANTHROPIC_API_KEY','SSH_AUTH_SOCK'].some(k=>Boolean(process.env[k]))};
+${process.platform === 'linux' ? 'result.nodeStreams=await nodeStreams();' : ''}
 fs.writeFileSync(p.ready+'.tmp',JSON.stringify({nonce:p.nonce,observation:result}),{flag:'wx'});fs.renameSync(p.ready+'.tmp',p.ready);
 const deadline=Date.now()+10000;while(!attempt(()=>{if(fs.readFileSync(p.proceed,'utf8')!==p.nonce)throw new Error()})){if(Date.now()>deadline)throw new Error();await new Promise(resolve=>setTimeout(resolve,25))}
 console.log(JSON.stringify(result))})().catch(()=>process.exit(2));`;
+}
+
+function linuxNodeStreamProbe(): string {
+  return String.raw`
+async function nodeStreams() {
+  const {spawnSync,spawn,fork}=require('node:child_process');
+  const input='node-stream-'+p.nonce;
+  const source="let input='',ended=false,message=null;process.stdin.setEncoding('utf8');process.stdin.on('data',value=>input+=value);function finish(){if(!ended||(process.send&&message===null))return;process.stdout.write('stdout:'+input);process.stderr.write('stderr:'+input);process.exitCode=37;if(process.send){process.send(message);process.disconnect()}}process.stdin.on('end',()=>{ended=true;finish()});if(process.send)process.on('message',value=>{message=value;finish()});";
+  const valid=value=>value.status===37&&value.signal===null&&!value.error&&value.stdout==='stdout:'+input&&value.stderr==='stderr:'+input;
+  const sync=spawnSync(process.execPath,['-e',source],{input,encoding:'utf8',timeout:3000,maxBuffer:8192});
+  if(!valid(sync)) return false;
+  function capture(child,ipc) {
+    return new Promise(resolve=>{
+      let stdout='',stderr='',error=false,message;
+      child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');
+      child.stdout.on('data',value=>stdout+=value);child.stderr.on('data',value=>stderr+=value);
+      for(const stream of [child.stdin,child.stdout,child.stderr])stream.on('error',()=>error=true);
+      child.on('error',()=>error=true);child.on('message',value=>message=value);
+      child.on('close',(status,signal)=>resolve(valid({status,signal,stdout,stderr,error})&&(!ipc||message===input)));
+      if(ipc)child.send(input,errorValue=>{if(errorValue)error=true});
+      child.stdin.end(input);
+    });
+  }
+  if(!await capture(spawn(process.execPath,['-e',source],{stdio:['pipe','pipe','pipe']}),false))return false;
+  const file=require('node:path').join(require('node:path').dirname(p.ready),'node-stream-child.cjs');
+  fs.writeFileSync(file,source,{flag:'wx',mode:0o600});
+  return capture(fork(file,[],{stdio:['pipe','pipe','pipe','ipc']}),true);
+}`;
 }
 
 export class CodexSandbox implements SandboxRunner {
@@ -534,6 +630,9 @@ export class CodexSandbox implements SandboxRunner {
       const supervision = await checkLinuxSupervision(signal);
       checks.push(supervision);
       if (!supervision.ok) return checks;
+      const network = await checkLinuxNetworkFilter(signal);
+      checks.push(network);
+      if (!network.ok) return checks;
     }
     const command = async (args: string[]) => {
       signal?.throwIfAborted();
@@ -849,6 +948,15 @@ export class CodexSandbox implements SandboxRunner {
                 ? 'Live probe blocked loopback and public TCP connections; controller baseline was reachable.'
                 : `The sandbox allowed a network connection; execution is blocked. Observed loopback=${p.loopback}, publicEgress=${p.egress}; controller baseline was reachable.`,
           });
+          if (process.platform === 'linux')
+            checks.push({
+              name: writable ? 'linux-node-streams-write' : 'linux-node-streams-read',
+              ok: p.nodeStreams === true,
+              detail:
+                p.nodeStreams === true
+                  ? 'Live Node sync/async capture and fork IPC preserved input, separate output streams, and exit status.'
+                  : 'Node child streams or fork IPC could not be verified; workflow execution is blocked.',
+            });
         } catch (error) {
           invocationFailed = true;
           invocationUncertain = hasUncertainTermination(error);

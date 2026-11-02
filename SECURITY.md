@@ -1,6 +1,6 @@
 # Security
 
-AgentGate runs a coding tool and repository-controlled check commands. Windows MXC has recorded native acceptance. Linux lifecycle and physical isolation passed with the recorded systemd/cgroup launch path, but workflows remain blocked by Node compatibility and combined acceptance. Overall acceptance is incomplete, so this preview should not be described as a generally verified isolation product. See the version-specific [acceptance evidence](docs/acceptance.md).
+AgentGate runs a coding tool and repository-controlled check commands. Windows MXC has recorded native workflow acceptance. Combined Linux lifecycle, isolation, Node IPC, and offline toolchain checks passed without authentication or model calls. Linux execution is available on the supported environment only when every live preflight check and separate authentication pass. An authenticated Linux Issue-to-PR workflow has not been recorded. This preview should not be described as a generally verified isolation product. See the version-specific [acceptance evidence](docs/acceptance.md).
 
 ## Reporting a vulnerability
 
@@ -23,7 +23,7 @@ The controller itself is not an untrusted-code sandbox. Do not run AgentGate as 
 
 ## Data and credentials
 
-State under `AGENTGATE_HOME` may contain private Issue text, repository paths, plans, check output, review findings, and events. Keep it outside repositories and do not publish it. State files/directories request private Unix permissions; Windows access also depends on the user's filesystem ACLs.
+State under `AGENTGATE_HOME` may contain private Issue text, repository paths, plans, check output, review findings, and events. Keep it outside repositories and do not publish it. Linux rejects state at or beneath a sandbox-readable runtime root, including the Node installation and system roots such as `/usr` and `/etc`, or beneath the target worktree. This keeps the private bubblewrap shim and supervision records outside worker grants. The session launcher is intentionally readable; the pinned filesystem backend cannot preserve that access beneath a masked state parent. State files/directories request private Unix permissions; Windows access also depends on the user's filesystem ACLs.
 
 Storage redacts recognized token formats, sensitive environment values, and credential fields recursively. Raw reasoning fields/events are omitted and raw Codex JSONL is discarded after parsing the final structured response. Redaction is heuristic and does not certify that arbitrary text is secret-free.
 

@@ -26,7 +26,7 @@ jobs:
       - name: Prepare the distro sandbox prerequisite without weakening AppArmor
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap apparmor-profiles apparmor-utils dbus-user-session
+          sudo apt-get install --yes --no-install-recommends bubblewrap python3 apparmor-profiles apparmor-utils dbus-user-session
           bwrap --version
           restriction="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
           namespace_probe() {
@@ -94,7 +94,13 @@ jobs:
       - name: Verify ordinary process cancellation and stale-lock refusal
         if: ${{ matrix.suite == 'lifecycle' && !cancelled() && steps.isolation.outcome == 'success' }}
         run: node test/manual/verify-lock-recovery.ts
-      - name: Record offline toolchain compatibility without hiding the issue 7 failure
+      - name: Verify production Node streams, fork IPC, and Unix socket boundaries
+        if: ${{ matrix.suite == 'compatibility' && !cancelled() && steps.isolation.outcome == 'success' }}
+        run: node test/manual/verify-linux-compatibility.ts "$AGENTGATE_CODEX_PATH" | tee "$RUNNER_TEMP/agentgate-native-compatibility.jsonl"
+      - name: Verify restricted app-server helper policy without a model
+        if: ${{ matrix.suite == 'compatibility' && !cancelled() && steps.isolation.outcome == 'success' }}
+        run: node test/manual/verify-linux-helper-policy.ts "$AGENTGATE_CODEX_PATH" | tee "$RUNNER_TEMP/agentgate-native-helper-policy.jsonl"
+      - name: Verify offline toolchain and injected failure diagnostics
         if: ${{ matrix.suite == 'compatibility' && !cancelled() && steps.isolation.outcome == 'success' }}
         run: node test/manual/verify-toolchain.ts "$AGENTGATE_CODEX_PATH" --mode toolchain | tee "$RUNNER_TEMP/agentgate-native-toolchain.jsonl"
       - name: Require captured Node streams for compatibility
@@ -115,6 +121,6 @@ jobs:
           {
             echo 'Native Linux results apply only to the named lifecycle or compatibility check.'
             echo 'No model was invoked and no authentication profile was supplied.'
-            echo 'Linux workflow execution remains blocked until all required native acceptance passes.'
+            echo 'Linux workflow execution requires all live doctor checks and separate authentication.'
             echo 'A failing compatibility check is tracked by #7 and is not converted to a pass.'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -919,7 +919,14 @@ async function main(): Promise<void> {
     // executor wrapper would select the injection seam and could bypass the real boundary.
     const doctor = await new CodexSandbox({ home, codexPath }).doctor(abort.signal);
     const requiredChecks = [
-      ...(process.platform === 'linux' ? ['linux-process-supervision'] : []),
+      ...(process.platform === 'linux'
+        ? [
+            'linux-process-supervision',
+            'linux-network-filter',
+            'linux-node-streams-read',
+            'linux-node-streams-write',
+          ]
+        : []),
       'codex-version',
       'codex-integrations',
       'codex-mcp',
@@ -934,7 +941,7 @@ async function main(): Promise<void> {
     const workflowGate = doctor.filter((check) => check.name === 'linux-workflow-support');
     const expectedWorkflowGate =
       process.platform === 'linux'
-        ? workflowGate.length === 1 && !workflowGate[0]!.ok
+        ? workflowGate.length === 1 && workflowGate[0]!.ok
         : workflowGate.length === 0;
     const isolationVerified =
       expectedWorkflowGate &&

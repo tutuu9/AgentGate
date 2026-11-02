@@ -290,6 +290,8 @@ test('task prompts carry approved scope and untrusted issue as data', () => {
 
 test('Codex never starts after doctor cancellation and preserves uncertain termination', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'agentgate-cancel-codex-'));
+  const worktree = join(directory, 'checkout');
+  await mkdir(worktree);
   const abort = new AbortController();
   const failure = new ProcessError('termination', 'Unverified owned process tree.');
   let calls = 0;
@@ -314,13 +316,13 @@ test('Codex never starts after doctor cancellation and preserves uncertain termi
   });
   try {
     await assert.rejects(
-      runner.run('plan', { run: fixtureRun(directory) }, abort.signal),
+      runner.run('plan', { run: fixtureRun(worktree) }, abort.signal),
       /doctor cancelled/,
     );
     assert.equal(calls, 0);
     cancelDoctor = false;
     await assert.rejects(
-      runner.run('plan', { run: fixtureRun(directory) }),
+      runner.run('plan', { run: fixtureRun(worktree) }),
       (error) => error === failure,
     );
   } finally {
@@ -340,6 +342,8 @@ test('Codex retains session files for nested uncertain termination and cleans or
     await t.test(failure === uncertain ? 'uncertain shutdown' : 'ordinary failure', async (t) => {
       const directory = await mkdtemp(join(tmpdir(), 'agentgate-codex-cleanup-'));
       t.after(() => rm(directory, { recursive: true, force: true }));
+      const worktree = join(directory, 'checkout');
+      await mkdir(worktree);
       let schemaPath: string | undefined;
       const runner = new CodexRunner({
         home: join(directory, 'home'),
@@ -354,7 +358,7 @@ test('Codex retains session files for nested uncertain termination and cleans or
       });
 
       await assert.rejects(
-        runner.run('plan', { run: fixtureRun(directory) }),
+        runner.run('plan', { run: fixtureRun(worktree) }),
         (error) => error === failure,
       );
       assert.ok(schemaPath);
@@ -373,6 +377,8 @@ test(
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'agentgate-codex-native-stop-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
+    const worktree = join(directory, 'checkout');
+    await mkdir(worktree);
     for (const kind of ['aborted', 'timeout', 'output-limit'] as const) {
       const failure = new ProcessError(kind, 'Synthetic native stop; not isolation evidence.');
       let schemaPath: string | undefined;
@@ -388,7 +394,7 @@ test(
         },
       });
       await assert.rejects(
-        runner.run('plan', { run: fixtureRun(directory) }),
+        runner.run('plan', { run: fixtureRun(worktree) }),
         (error) =>
           hasUncertainTermination(error) && error instanceof Error && error.cause === failure,
       );
