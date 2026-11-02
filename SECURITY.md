@@ -1,6 +1,6 @@
 # Security
 
-AgentGate runs a coding tool and repository-controlled check commands. Windows MXC has recorded native acceptance; Linux workflows remain blocked after native cancellation and Node compatibility failures. Overall acceptance is incomplete, so this preview should not be described as a generally verified isolation product. See the version-specific [acceptance evidence](docs/acceptance.md).
+AgentGate runs a coding tool and repository-controlled check commands. Windows MXC has recorded native acceptance. Linux lifecycle and physical isolation passed with the recorded systemd/cgroup launch path, but workflows remain blocked by Node compatibility and combined acceptance. Overall acceptance is incomplete, so this preview should not be described as a generally verified isolation product. See the version-specific [acceptance evidence](docs/acceptance.md).
 
 ## Reporting a vulnerability
 

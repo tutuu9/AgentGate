@@ -1,0 +1,120 @@
+name: Native Linux lifecycle
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native Linux / ${{ matrix.suite }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [lifecycle, compatibility]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Prepare the distro sandbox prerequisite without weakening AppArmor
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap apparmor-profiles apparmor-utils dbus-user-session
+          bwrap --version
+          restriction="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+          namespace_probe() {
+            bwrap --unshare-user --unshare-pid --unshare-net --ro-bind / / --proc /proc --dev /dev /usr/bin/true
+          }
+          if ! namespace_probe; then
+            if [[ "$restriction" != 1 ]]; then
+              echo 'Native namespace prerequisite unavailable; blocked.' >&2
+              exit 1
+            fi
+            profile=/etc/apparmor.d/bwrap-userns-restrict
+            if [[ ! -f "$profile" ]]; then
+              packaged_profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+              test -f "$packaged_profile"
+              sudo install -m 0644 "$packaged_profile" "$profile"
+            fi
+            sudo apparmor_parser -r "$profile"
+            namespace_probe
+          fi
+          restriction_after="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+          test "$restriction_after" = "$restriction"
+          printf 'AppArmor restriction preserved: %s\n' "${restriction:-unavailable}"
+      - name: Provision the ordinary runner user manager and cgroup v2
+        run: |
+          test "$(id -u)" != 0
+          test -f /sys/fs/cgroup/cgroup.controllers
+          test "$(systemctl --version | head -n 1 | awk '{print $2}')" = 255
+          runner_uid="$(id -u)"
+          runner_user="$(id -un)"
+          sudo loginctl enable-linger "$runner_user"
+          sudo systemctl start "user@${runner_uid}.service"
+          export XDG_RUNTIME_DIR="/run/user/${runner_uid}"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+          test -S "${XDG_RUNTIME_DIR}/bus"
+          test "$(stat -c %u "$XDG_RUNTIME_DIR")" = "$runner_uid"
+          systemctl --user show-environment > /dev/null
+          systemd-run --user --wait --collect --pipe /usr/bin/true
+          systemctl --user set-environment AGENTGATE_FAKE_MANAGER_SECRET=disposable-native-sentinel
+          printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Install the pinned native Codex without authentication
+        run: |
+          npm install --prefix "$RUNNER_TEMP/agentgate-codex" --no-save --ignore-scripts --no-audit --no-fund @openai/codex@0.154.0
+          mapfile -d '' candidates < <(find "$RUNNER_TEMP/agentgate-codex/node_modules/@openai" -type f -name codex -perm -u=x -print0)
+          test "${#candidates[@]}" = 1
+          printf 'AGENTGATE_CODEX_PATH=%s\n' "$(realpath "${candidates[0]}")" >> "$GITHUB_ENV"
+      - name: Record the exact native environment
+        run: |
+          uname -a
+          cat /etc/os-release
+          node --version
+          systemctl --version
+          "$AGENTGATE_CODEX_PATH" --version
+          git rev-parse HEAD
+      - name: Verify production filesystem and network isolation without a model
+        id: isolation
+        run: node test/manual/verify-isolation.ts "$AGENTGATE_CODEX_PATH" | tee "$RUNNER_TEMP/agentgate-native-isolation.jsonl"
+      - name: Verify production native lifecycle and controller loss
+        if: ${{ matrix.suite == 'lifecycle' && !cancelled() && steps.isolation.outcome == 'success' }}
+        run: node test/manual/verify-linux-supervisor.ts "$AGENTGATE_CODEX_PATH" | tee "$RUNNER_TEMP/agentgate-native-lifecycle.jsonl"
+      - name: Verify ordinary process cancellation and stale-lock refusal
+        if: ${{ matrix.suite == 'lifecycle' && !cancelled() && steps.isolation.outcome == 'success' }}
+        run: node test/manual/verify-lock-recovery.ts
+      - name: Record offline toolchain compatibility without hiding the issue 7 failure
+        if: ${{ matrix.suite == 'compatibility' && !cancelled() && steps.isolation.outcome == 'success' }}
+        run: node test/manual/verify-toolchain.ts "$AGENTGATE_CODEX_PATH" --mode toolchain | tee "$RUNNER_TEMP/agentgate-native-toolchain.jsonl"
+      - name: Require captured Node streams for compatibility
+        if: ${{ matrix.suite == 'compatibility' && !cancelled() && steps.isolation.outcome == 'success' }}
+        run: |
+          node --input-type=module - "$RUNNER_TEMP/agentgate-native-isolation.jsonl" <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const entries = readFileSync(process.argv[2], 'utf8').trim().split('\n').map(JSON.parse);
+          const result = entries.findLast(entry => entry.scope === 'native-filesystem-network-isolation');
+          if (result?.result !== 'passed' || result.capturedChildStdioCompatible !== true) {
+            console.error('BLOCKED (#7): captured Node child streams remain incompatible. Linux workflows stay disabled.');
+            process.exitCode = 2;
+          }
+          NODE
+      - name: State the limits of this native result
+        if: ${{ always() }}
+        run: |
+          {
+            echo 'Native Linux results apply only to the named lifecycle or compatibility check.'
+            echo 'No model was invoked and no authentication profile was supplied.'
+            echo 'Linux workflow execution remains blocked until all required native acceptance passes.'
+            echo 'A failing compatibility check is tracked by #7 and is not converted to a pass.'
+          } >> "$GITHUB_STEP_SUMMARY"
