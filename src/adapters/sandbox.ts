@@ -109,13 +109,25 @@ export async function executeSandbox(
 
 function includeWorkflowSupport(checks: DoctorCheck[]): DoctorCheck[] {
   if (process.platform !== 'linux') return checks;
+  const isolationChecks = [
+    'sandbox-read',
+    'sandbox-read-network',
+    'sandbox-write',
+    'sandbox-write-network',
+    'linux-node-streams-read',
+    'linux-node-streams-write',
+  ];
+  const supported =
+    isolationChecks.every((name) => checks.some((check) => check.name === name && check.ok)) &&
+    checks.every((check) => check.ok || check.name === 'codex-auth');
   return [
     ...checks,
     {
       name: 'linux-workflow-support',
-      ok: false,
-      detail:
-        'Linux workflows are blocked: captured Node child streams and combined workflow acceptance remain unverified. Passing lifecycle or physical diagnostics does not authorize execution.',
+      ok: supported,
+      detail: supported
+        ? 'Supported Linux sandbox boundaries and Node IPC verified; authentication is checked separately.'
+        : 'Linux workflows require all runtime, filesystem, network, and Node IPC checks to pass.',
     },
   ];
 }

@@ -973,9 +973,7 @@ test('synthetic probe observations fail closed on missing network evidence or fo
   try {
     const accepted = await sandbox.doctor();
     assert.equal(
-      accepted
-        .filter((check) => check.name !== 'linux-workflow-support')
-        .every((check) => check.ok),
+      accepted.every((check) => check.ok),
       true,
       'Synthetic observations test only the decision logic, not real isolation.',
     );

@@ -121,6 +121,6 @@ jobs:
           {
             echo 'Native Linux results apply only to the named lifecycle or compatibility check.'
             echo 'No model was invoked and no authentication profile was supplied.'
-            echo 'Linux workflow execution remains blocked until all required native acceptance passes.'
+            echo 'Linux workflow execution requires all live doctor checks and separate authentication.'
             echo 'A failing compatibility check is tracked by #7 and is not converted to a pass.'
           } >> "$GITHUB_STEP_SUMMARY"
