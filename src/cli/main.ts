@@ -326,7 +326,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown error';
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+const entrypoint = process.argv[1]
+  ? await realpath(process.argv[1]).catch(() => undefined)
+  : undefined;
+if (entrypoint && import.meta.url === pathToFileURL(entrypoint).href) {
   main(process.argv.slice(2))
     .then((code) => {
       process.exitCode = code;

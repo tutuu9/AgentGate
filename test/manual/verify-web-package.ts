@@ -1,17 +1,28 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import {
+  isolatedEnvironment,
+  packageCommand,
+  packageTarget,
+  systemExecutable,
+} from './package-command.ts';
 
-const entrypoint = process.argv[2];
-if (!entrypoint) throw new Error('Provide the installed AgentGate CLI entrypoint.');
+const target = packageTarget(process.argv.slice(2));
 const home = await mkdtemp(join(tmpdir(), 'agentgate-web-package-'));
-const child = spawn(process.execPath, [resolve(entrypoint), 'web', '--port', '0', '--home', home], {
+const invocation = packageCommand(target, ['web', '--port', '0'], isolatedEnvironment(home));
+const child = spawn(invocation.command, invocation.args, {
+  cwd: home,
+  env: invocation.env,
+  windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+  windowsHide: true,
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 const exited = once(child, 'close');
+let serverUrl: URL | undefined;
 try {
   const url = await new Promise<URL>((resolve, reject) => {
     let output = '';
@@ -33,6 +44,7 @@ try {
       }
     });
   });
+  serverUrl = url;
   for (const path of ['/', '/app.js', '/app.css']) {
     const response = await fetch(new URL(path, url), { signal: AbortSignal.timeout(5_000) });
     assert.equal(response.status, 200, `Packaged asset ${path}`);
@@ -54,12 +66,27 @@ try {
     'Packaged web server, local assets, and authenticated empty state passed.\n',
   );
 } finally {
-  if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+  if (child.exitCode === null && child.signalCode === null) {
+    if (process.platform === 'win32' && target.installedPrefix && child.pid) {
+      const stopped = spawnSync(
+        systemExecutable('taskkill.exe'),
+        ['/pid', String(child.pid), '/T', '/F'],
+        { encoding: 'utf8', timeout: 10_000, windowsHide: true },
+      );
+      assert.ifError(stopped.error);
+      assert.equal(stopped.status, 0, stopped.stderr);
+    } else child.kill('SIGTERM');
+  }
   const timeout = setTimeout(() => child.kill('SIGKILL'), 5_000);
   try {
     await exited;
   } finally {
     clearTimeout(timeout);
+  }
+  if (serverUrl) {
+    await assert.rejects(
+      fetch(new URL('/api/state', serverUrl), { signal: AbortSignal.timeout(2_000) }),
+    );
   }
   await rm(home, { recursive: true, force: true });
 }

@@ -33,7 +33,8 @@ jobs:
         run: npm run check
       - name: Install and inspect the packaged CLI
         run: |
-          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
-          npm install --ignore-scripts --prefix "$RUNNER_TEMP/agentgate-package-smoke" "$RUNNER_TEMP"/agentgate-*.tgz
-          node test/manual/verify-cli-package.ts "$RUNNER_TEMP/agentgate-package-smoke/node_modules/agentgate/dist/cli/main.js"
-          node test/manual/verify-web-package.ts "$RUNNER_TEMP/agentgate-package-smoke/node_modules/agentgate/dist/cli/main.js"
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/agentgate-pack.json"
+          node scripts/verify-package.mjs "$RUNNER_TEMP/agentgate-pack.json"
+          npm install --ignore-scripts --prefix "$RUNNER_TEMP/agentgate package smoke" "$RUNNER_TEMP"/agentgate-*.tgz
+          node test/manual/verify-cli-package.ts --installed-prefix "$RUNNER_TEMP/agentgate package smoke"
+          node test/manual/verify-web-package.ts --installed-prefix "$RUNNER_TEMP/agentgate package smoke"

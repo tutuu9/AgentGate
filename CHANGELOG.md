@@ -20,6 +20,7 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Fixed
 
+- Clean build output before packaging, validate tarball contents, and verify installed command launchers on Windows and Ubuntu, including CLI startup through npm's Unix symlink.
 - Resolve the minimatch development-toolchain advisory with a version-bounded override to 11.0.4 and real ESLint/TypeScript compatibility coverage.
 - Validate publication credentials consistently across configuration formats while preserving explicit examples and environment references; reject sensitive changes before staging or publication.
 - Preserve Linux nested Node streams and fork IPC with an offline syscall boundary, retaining filesystem restrictions and denying host network/Unix-socket access. Enable supported Linux workflows after combined native and ordinary CI acceptance, subject to live preflight and separate authentication.
