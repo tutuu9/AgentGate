@@ -24,6 +24,17 @@ When a new change affects an area, rerun the relevant evidence. Keep historical 
 
 Earlier routine results remain historical evidence: local `npm run check` at `fed3d27` passed 128 tests (112 passed, zero failures, 16 platform skips on Windows/Node 24.13.0), and [CI run 41132304524](https://github.com/tutuu9/AgentGate/actions/runs/41132304524) passed Windows and Ubuntu at `53bd77a` (Ubuntu: 124 passed, zero failures, four skips).
 
+## Development dependency audit: 2026-11-03
+
+This follow-up records [issue #15](https://github.com/tutuu9/AgentGate/issues/15), based on main `336daab0230c9a5e949df5eeac2bee12069cefa2` after PR #20. The candidate lockfile SHA-256 is `b9da68f6226bad52801ac2adef10ba9fe013efb1b8733c5178e0cf7d86894924`. Environment: native Windows, Node.js 24.13.0, npm 11.6.2. The historical 2026-10-30 audit above remains unchanged.
+
+- Before the dependency change, the online full audit reported 11 moderate affected package entries from one advisory, [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249), with minimatch 10.2.6 in the development graph. This is not a claim of 11 independent vulnerabilities or demonstrated runtime exploitation.
+- The current upstream consumers still request minimatch 10.x: ESLint 10.14.0, `@eslint/config-array` 0.23.5, and `@typescript-eslint/typescript-estree` 8.72.1 through `typescript-eslint` 8.72.1. A temporary version-bounded override maps `minimatch@<11.0.1` to 11.0.4. All three paths resolve to that patched version; its new `@isaacs/nonrecursive-glob-match` 1.0.3 dependency is also development-only. The production graph remains `zod` 4.6.7.
+- `npm ci --ignore-scripts --no-audit --no-fund --offline=false` completed successfully from the candidate lockfile. `npm ls minimatch --all` exited zero and showed no invalid dependency entries.
+- Fresh `npm audit --offline=false --json` and `npm audit --offline=false --omit=dev --json` both exited zero with zero reported vulnerabilities. These results describe the registry advisory data available on the recorded date.
+- Local `npm run check` passed formatting, lint, typecheck, build, and 207 tests (187 passed, 20 platform skips, zero failures). A tarball with 77 expected entries was installed into a fresh temporary prefix; installed CLI help and the packaged-web smoke helper passed. The installed application dependency graph contained only `zod` 4.6.7.
+- The compatibility tests in `test/toolchain.test.ts` exercise the real ESLint configuration, nested/dotfile selection, ignore patterns, expected TypeScript diagnostics, and project-service allowlist acceptance/refusal. They use disposable files and no model credentials or paid APIs; they do not establish native sandbox isolation. The override removal condition is documented in [CONTRIBUTING.md](../CONTRIBUTING.md).
+
 ## Renewed Windows attempt: 2026-10-30
 
 - Code commit `176f3e1`, Node.js 24.13.0, Codex CLI 0.154.0, native Windows.
