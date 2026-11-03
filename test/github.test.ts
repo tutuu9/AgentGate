@@ -289,6 +289,168 @@ test('snapshot blocks sensitive files, secret values and executable Git filters 
   );
 });
 
+test('snapshot rejects credential assignments before changing the index', async (t) => {
+  const f = await fixture(t);
+  await f.gateway.createWorktree(f.repo, f.worktree, f.branch, f.base);
+  const indexPath = await f.git(['rev-parse', '--git-path', 'index'], f.worktree);
+  const index = await readFile(indexPath);
+  const synthetic = 'SyntheticCredential12345';
+  const cases = [
+    { name: 'prefixed config key', text: `DB_PASSWORD=${synthetic}` },
+    { name: 'minimum credential length', text: 'password=Abc123Def456' },
+    { name: 'JSON key', path: 'settings.json', text: JSON.stringify({ password: synthetic }) },
+    { name: 'quoted YAML key', path: 'settings.yaml', text: `'secret': '${synthetic}'` },
+    {
+      name: 'JavaScript property',
+      path: 'settings.js',
+      text: `const config = { apiKey: '${synthetic}' };`,
+    },
+    {
+      name: 'multiline assignment',
+      path: 'settings.json',
+      text: `"access-token":\n  "${synthetic}"`,
+    },
+    { name: 'quoted whitespace', text: 'password="synthetic phrase with spaces"' },
+    {
+      name: 'escaped quote and comma',
+      text: JSON.stringify({ password: 'synthetic"value, continued' }),
+    },
+    { name: 'unrelated comment', text: `// example configuration\npassword=${synthetic}` },
+    {
+      name: 'unrelated environment reference',
+      text: `const name = process.env.NAME;\nsecret=${synthetic}`,
+    },
+    {
+      name: 'placeholder first',
+      path: 'settings.ts',
+      text: `password=your_password; secret=${synthetic}`,
+    },
+    {
+      name: 'placeholder last',
+      path: 'settings.ts',
+      text: `password=${synthetic}; secret=your_secret`,
+    },
+    {
+      name: 'empty value first',
+      path: 'settings.json',
+      text: `{"password":"","api_key":"${synthetic}"}`,
+    },
+    { name: 'placeholder text within a value', text: `secret="prefix-example-${synthetic}"` },
+    {
+      name: 'environment fallback',
+      path: 'settings.ts',
+      text: `const secret = process.env.SECRET || '${synthetic}';`,
+    },
+    {
+      name: 'bracket environment fallback',
+      path: 'settings.ts',
+      text: `const apiKey = process.env['API_KEY'] ?? '${synthetic}';`,
+    },
+    {
+      name: 'placeholder concatenation',
+      path: 'settings.ts',
+      text: `const password = 'your_password' + '${synthetic}';`,
+    },
+    { name: 'quoted environment-looking literal', text: 'password="process.env.PASSWORD"' },
+    {
+      name: 'typed credential',
+      path: 'settings.ts',
+      text: `const password: string = '${synthetic}';`,
+    },
+    ...[']', '}', ')', ',', ';'].map((punctuation) => ({
+      name: `bare configuration punctuation ${punctuation}`,
+      text: `PASSWORD=short${punctuation}${synthetic}`,
+    })),
+    {
+      name: 'configuration placeholder with a literal suffix',
+      text: `PASSWORD=your_password;${synthetic}`,
+    },
+    {
+      name: 'provider token in example context',
+      text: `secret=your_password; value="${'ghp_' + 'x'.repeat(36)}"`,
+    },
+    { name: 'private key in example context', text: '// placeholder\n-----BEGIN PRIVATE KEY-----' },
+  ];
+  for (const { name, text, path = '.env.example' } of cases) {
+    await t.test(name, async () => {
+      await writeFile(join(f.worktree, path), text);
+      const callCount = f.calls.length;
+      await assert.rejects(f.gateway.snapshot(f.worktree), {
+        message: `Potential secret detected in: ${path}`,
+      });
+      assert.deepEqual(await readFile(indexPath), index);
+      assert.ok(!f.calls.slice(callCount).some((call) => call.args.includes('add')));
+      assert.equal(await readFile(join(f.worktree, path), 'utf8'), text);
+      await rm(join(f.worktree, path));
+    });
+  }
+  assert.equal(f.network.pushes, 0);
+  assert.equal(f.network.creates, 0);
+});
+
+test('snapshot permits complete example values and environment references', async (t) => {
+  const f = await fixture(t);
+  await f.gateway.createWorktree(f.repo, f.worktree, f.branch, f.base);
+  const files = {
+    '.env.example': [
+      'PASSWORD=your_password_here # choose a value locally',
+      'API_KEY=replace_with_your_api_key',
+      'SECRET=${APPLICATION_SECRET}',
+      'ACCESS_TOKEN=$APPLICATION_TOKEN',
+      'SECRET=short',
+      'PASSWORD=',
+      'API_KEY=${APPLICATION_KEY}',
+      'PASSWORD=',
+      'API_KEY=your_api_key_here',
+    ].join('\n'),
+    'settings.json': JSON.stringify({
+      password: 'your_password',
+      api_key: '<your_api_key_here>',
+      secret: '',
+    }),
+    'settings.yaml': '"access_token": "example_access_token"\n\'secret\': "${APPLICATION_SECRET}"',
+    'settings.ts': [
+      'const password = process.env.APPLICATION_PASSWORD; // configured locally',
+      'const config = { apiKey: process.env["APPLICATION_KEY"] };',
+      "const accessToken = process.env['APPLICATION_TOKEN'];",
+      'const secret = `${APPLICATION_SECRET}`;',
+      'const password: string = process.env.PASSWORD;',
+      'const apiKey: string = "your_api_key_here";',
+      'password=process.env.PASSWORD;run();',
+      'password=short;api_key=your_api_key;',
+    ].join('\n'),
+  };
+  for (const [path, text] of Object.entries(files)) await writeFile(join(f.worktree, path), text);
+  const tree = await f.gateway.snapshot(f.worktree);
+  for (const [path, text] of Object.entries(files))
+    assert.equal(await f.git(['show', `${tree}:${path}`], f.worktree), text);
+});
+
+test('publication rejects newly introduced credentials before staging or remote operations', async (t) => {
+  const f = await fixture(t);
+  const run = await candidate(f);
+  const indexPath = await f.git(['rev-parse', '--git-path', 'index'], f.worktree);
+  const index = await readFile(indexPath);
+  await writeFile(
+    join(f.worktree, 'settings.json'),
+    JSON.stringify({ password: 'SyntheticCredential12345' }),
+  );
+  const callCount = f.calls.length;
+  await assert.rejects(
+    f.gateway.publish(run, true),
+    /Potential secret detected in: settings\.json/,
+  );
+  assert.deepEqual(await readFile(indexPath), index);
+  assert.ok(
+    !f.calls
+      .slice(callCount)
+      .some((call) => call.args.some((arg) => ['add', 'push', 'ls-remote'].includes(arg))),
+  );
+  assert.equal(await f.git(['rev-parse', 'HEAD'], f.worktree), run.candidateCommit);
+  assert.equal(f.network.pushes, 0);
+  assert.equal(f.network.creates, 0);
+});
+
 test('commit preserves exactly the checked tree and rejects later edits', async (t) => {
   const f = await fixture(t);
   const run = await candidate(f);

@@ -19,6 +19,7 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Fixed
 
+- Validate publication credentials consistently across configuration formats while preserving explicit examples and environment references; reject sensitive changes before staging or publication.
 - Preserve Linux nested Node streams and fork IPC with an offline syscall boundary, retaining filesystem restrictions and denying host network/Unix-socket access. Enable supported Linux workflows after combined native and ordinary CI acceptance, subject to live preflight and separate authentication.
 - Reject Linux state placement beneath sandbox-readable runtime or worktree roots so private boundary and supervision records remain inaccessible.
 - Supervise native Linux sandbox launches with private systemd user services and cgroup completion checks; preserve uncertain shutdown state and the original failure cause.
