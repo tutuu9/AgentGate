@@ -5,10 +5,12 @@ import { randomUUID } from 'node:crypto';
 import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { RunSchema } from '../src/core/contracts.ts';
 import { FileRunStore } from '../src/core/store.ts';
+import { verifyCliMetadata } from './manual/verify-cli-package.ts';
 
-test('CLI help is available without credentials or state initialization', () => {
+test('CLI help describes workflow and metadata commands', () => {
   const result = spawnSync(process.execPath, ['src/cli/main.ts', '--help'], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /agentgate run/);
@@ -16,6 +18,11 @@ test('CLI help is available without credentials or state initialization', () => 
   assert.match(result.stdout, /--reasoning-effort <effort>/);
   assert.match(result.stdout, /repeat them when resuming/);
   assert.match(result.stdout, /agentgate web/);
+  assert.match(result.stdout, /--version/);
+});
+
+test('source CLI reports package metadata without credentials or state initialization', async () => {
+  await verifyCliMetadata(fileURLToPath(new URL('../src/cli/main.ts', import.meta.url)));
 });
 
 test('web rejects invalid ports and misplaced options before initializing state', async (t) => {

@@ -6,6 +6,7 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 
 ### Added
 
+- `--version` and a help banner that read the CLI's own package metadata, available offline without authentication or state initialization.
 - Local browser workflow control with token-protected loopback HTTP, separate plan/commit/ordinary-PR decisions, cancellation and resume, and bundled assets in the npm package.
 - Local TypeScript CLI for explicit repository registration and GitHub Issue runs.
 - Separate approval of a structured plan and the exact candidate commit before publication.
