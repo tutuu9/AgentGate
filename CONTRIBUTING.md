@@ -15,6 +15,10 @@ The check command runs formatting validation, ESLint, TypeScript, behavior tests
 
 Prefer meaningful behavior tests: changed approval data, interruption and recovery, malformed external results, process failures, and denied operations. A passing fake sandbox test proves adapter behavior only. Real permission claims belong in the separate [acceptance record](docs/acceptance.md).
 
+The temporary `minimatch@<11.0.1` override pins affected versions to `11.0.4` for [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249). It currently covers only the development dependencies of ESLint, `@eslint/config-array`, and `@typescript-eslint/typescript-estree`. The selector targets the advisory's affected version range. Upstream consumer releases still request minimatch 10.x. Because this crosses a major version, `test/toolchain.test.ts` exercises actual lint file selection, ignores, TypeScript diagnostics, and project-service allowlist behavior on Node.js 24.
+
+Remove the override when the ordinary upstream dependency graph resolves patched minimatch versions without it. Regenerate the lockfile and require a clean `npm ci`, a valid `npm ls minimatch --all`, the compatibility tests, `npm run check`, Windows/Ubuntu package checks, and fresh online full/production audits before removal. Do not replace this with a forced audit fix or a downgrade of the lint toolchain.
+
 ## Propose a change
 
 1. Open or select an Issue with a concrete outcome and acceptance criteria. Discuss material scope changes before expanding an implementation.
