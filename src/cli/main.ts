@@ -17,7 +17,8 @@ import { execute } from '../adapters/process.ts';
 import { TerminalInteraction } from './terminal.ts';
 import { startWebServer } from '../web/server.ts';
 
-const HELP = `AgentGate 0.1.0-dev.0 — human-approved Issue-to-PR workflows
+function help(version: string): string {
+  return `AgentGate ${version} — human-approved Issue-to-PR workflows
 
 Usage:
   agentgate doctor
@@ -32,6 +33,7 @@ Usage:
 Options:
   --home <path>   State directory (default: AGENTGATE_HOME or ~/.agentgate)
   --help         Show this help
+  --version      Show the installed package version
 
 Run/resume options:
   --model <id>                 Explicit Codex model identifier
@@ -47,6 +49,7 @@ Requires Node.js 24, Git, GitHub CLI, and a verified Codex sandbox.
 Run/repo add/resume/cleanup require an interactive terminal; there is no --yes bypass.
 No merge, deployment, paid API fallback, or automatic dependency installation.
 `;
+}
 
 function show(value: string): void {
   process.stdout.write(`${cleanTerminal(redact(value))}\n`);
@@ -59,6 +62,7 @@ export async function main(argv: string[]): Promise<number> {
     strict: true,
     options: {
       help: { type: 'boolean', short: 'h' },
+      version: { type: 'boolean' },
       json: { type: 'boolean' },
       home: { type: 'string' },
       repo: { type: 'string' },
@@ -69,8 +73,11 @@ export async function main(argv: string[]): Promise<number> {
       port: { type: 'string' },
     },
   });
-  if (values.help || !positionals.length) {
-    show(HELP);
+  if (values.version || values.help || !positionals.length) {
+    const { version } = z
+      .object({ version: z.string().min(1) })
+      .parse(JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')));
+    show(values.version ? version : help(version));
     return 0;
   }
   if (process.versions.node.split('.')[0] !== '24')

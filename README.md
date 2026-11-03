@@ -52,9 +52,12 @@ npm ci
 npm run check
 npm link
 agentgate --help
+agentgate --version
 ```
 
 `npm run check` includes the build. Alternatively, run `npm run build` and use `node dist/cli/main.js --help` without a global link. `npm pack` creates an installable local tarball; this is not a public release or registry publication.
+
+`--version` prints the version from the CLI's own `package.json`; the help banner uses the same metadata. Both commands work offline without authentication or an interactive terminal and do not initialize state.
 
 ## Configure authentication and state
 
