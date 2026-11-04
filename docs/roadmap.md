@@ -1,42 +1,30 @@
 # Roadmap and release criteria
 
-The current package is `0.1.0-dev.0`, an implementation preview. The first stable claim is conditional on recorded acceptance evidence, not on the presence of files or passing fake-provider tests.
+`0.1.0-beta.1` is the proposed first public beta. The candidate includes the Codex CLI workflow and the local browser interface. The planned distribution is an installable `.tgz` attached to a GitHub prerelease. The maintainer reviews the version, notes, artifact, and qualification results before deciding whether to publish. [Beta preparation #18](https://github.com/tutuu9/AgentGate/issues/18).
 
-## First delivery: CLI with Codex
+## Implemented for the beta
 
-| Milestone / future Issue      | Acceptance criteria                                                                                                                                                        |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Contracts and local state     | Repository/run validation, atomic persistence, corruption refusal, exclusive lock, and preserved unpublished work have behavior tests.                                     |
-| Human-approved orchestration  | Plan revisions, preparation, mandatory checks, separate review, one repair, cancellation, and checkpoint resume are tested.                                                |
-| Controlled GitHub publication | Repository identity, worktree ownership, exact-tree/commit verification, explicit push, draft PR, and separately approved ordinary fallback are covered.                   |
-| Native sandbox compatibility  | Real Windows and Linux allow/deny observations establish supported behavior; unavailable or failed observations block execution.                                           |
-| End-to-end owner workflow     | A disposable owned repository completes Issue → plan approval → implementation → checks → review → publication approval → PR, with separate refusal and recovery examples. |
-| Public contributor package    | README/examples, shared instructions, MIT license, security reporting path, templates, CI, package smoke test, and acceptance record match actual behavior.                |
+| Capability                   | Delivered behavior and evidence                                                                                                                                                                                                                                               |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Contracts and local state    | Repository/run validation, atomic persistence, corruption refusal, an exclusive lock, and preservation of unpublished work have behavior tests.                                                                                                                               |
+| Human-approved orchestration | The CLI supports plan revisions, worktree preparation, mandatory checks, independent review, one repair, cancellation, and explicit resume.                                                                                                                                   |
+| GitHub publication           | The controller checks repository identity, worktree ownership, and the exact commit approved for push and draft PR creation. An ordinary PR requires a separate decision if drafts are unavailable.                                                                           |
+| Local web interface          | The browser uses the same durable workflow for start, inspection, approvals, cancellation, and resume. Repository registration, check configuration, authentication, and cleanup remain CLI operations. [Web implementation #3](https://github.com/tutuu9/AgentGate/issues/3) |
+| Public package               | The CLI reports the package version. CI checks the tarball contents and tests the installed launcher, bundled web assets, authenticated empty state, and shutdown on Windows and Ubuntu. [Package verification #17](https://github.com/tutuu9/AgentGate/issues/17)            |
 
-The source implements the first workflow layers and their test seams. Milestones are not declared accepted until their evidence is entered in [acceptance.md](acceptance.md). Do not turn this table into fabricated completed GitHub Issues or release history.
+The Windows MXC record covers real Issue-to-draft-PR runs with separate plan and exact-commit approvals. The CLI and browser records include publication refusal and recovery. The ordinary-PR fallback has fixture coverage because the disposable repositories supported draft PRs. [CLI acceptance #2](https://github.com/tutuu9/AgentGate/issues/2) and [web acceptance #9](web-acceptance.md).
 
-Tracking Issues:
+All seven native acceptance criteria were fulfilled in the recorded Windows and Linux environments. The 2026-11-02 Ubuntu run verified isolation, process lifecycle, Node IPC, and offline toolchain behavior after the fixes in [#6](https://github.com/tutuu9/AgentGate/issues/6) and [#7](https://github.com/tutuu9/AgentGate/issues/7). The run used an unauthenticated profile and made no model calls. Linux workflows require successful live preflight and separate authentication. [Platform acceptance record](acceptance.md), [native CI on main](https://github.com/tutuu9/AgentGate/actions/runs/41404729439), and [Windows/Ubuntu CI](https://github.com/tutuu9/AgentGate/actions/runs/41403589070).
 
-- [Native Windows/Linux sandbox acceptance](https://github.com/tutuu9/AgentGate/issues/1) has fulfilled all seven criteria in the recorded environments. [Linux process shutdown #6](https://github.com/tutuu9/AgentGate/issues/6) and [Node stream/network compatibility #7](https://github.com/tutuu9/AgentGate/issues/7) are merged and completed; [native acceptance on main](https://github.com/tutuu9/AgentGate/actions/runs/41404729439) and [ordinary Windows/Ubuntu CI](https://github.com/tutuu9/AgentGate/actions/runs/41403589070) passed on 2026-11-02. Supported Linux workflows still require successful live preflight and separate authentication. Linux probes used no authentication or model calls and do not establish a Linux Issue-to-PR workflow. Native and ordinary CI remain enabled. [Real workflow/recovery acceptance](https://github.com/tutuu9/AgentGate/issues/2) is completed for Windows MXC. The [v0.1 CLI acceptance milestone](https://github.com/tutuu9/AgentGate/milestone/1) remains open; closing native acceptance does not declare a release.
-- [Local web interface](https://github.com/tutuu9/AgentGate/issues/3) belongs to [v0.2](https://github.com/tutuu9/AgentGate/milestone/2). The implementation adds browser workflow control over the same core; repository registration, check configuration, and cleanup remain CLI operations. Its coverage is tracked in [web acceptance](web-acceptance.md).
-- [Claude Code adapter](https://github.com/tutuu9/AgentGate/issues/4) belongs to [v0.3](https://github.com/tutuu9/AgentGate/milestone/3).
+## First public beta qualification
 
-## Before a first public release
+The v0.1 release work includes the completed fixes for [publication credential validation #14](https://github.com/tutuu9/AgentGate/issues/14), the [development dependency advisory #15](https://github.com/tutuu9/AgentGate/issues/15), [CLI version reporting #16](https://github.com/tutuu9/AgentGate/issues/16), and [package verification #17](https://github.com/tutuu9/AgentGate/issues/17). The web interface originally tracked under v0.2 is included in this candidate. [v0.1 milestone](https://github.com/tutuu9/AgentGate/milestone/1) and [web milestone](https://github.com/tutuu9/AgentGate/milestone/2).
 
-- Run `npm run check` on the release commit and obtain successful Windows/Ubuntu CI results.
-- Inspect `npm pack` contents and install the tarball in a fresh directory; verify the documented command surface.
-- Complete live sandbox acceptance on supported environments, recording versions and limitations without credentials.
-- Complete the controlled GitHub scenario and prove that declining each approval causes no unauthorized publication.
-- Exercise cancellation, changed source after checks, missing/offline prerequisites, failed review, partial publication, and resume.
-- Review tracked files and package contents for credentials, auth caches, local state, logs, dependencies, and worktrees.
-- Verify the actual branch-protection and private-vulnerability-reporting settings available for this repository/account.
-- Have the maintainer review the changelog, choose the version, and explicitly approve any tag, release, or npm publication.
+For the candidate commit, record `npm run check`, Windows/Ubuntu CI, relevant native evidence, full and production dependency audits, and the repository's branch-protection and private-reporting settings. Review tracked files and the pack manifest, install the tarball in a fresh prefix, and record its filename, version, SHA-256, and source commit for the publication decision. [Release checklist #18](https://github.com/tutuu9/AgentGate/issues/18).
 
-## Later iterations
+## After the beta
 
-1. Evaluate the local web workflow preview with the same native platform restrictions; keep CLI operation available.
-2. Add a Claude Code adapter after checking its current supported integration/authentication terms and matching the same permission contract.
-3. Expand compatibility from measured evidence: additional Codex versions, macOS or WSL, and richer offline toolchains.
-4. Consider multiple tasks, queues, team use, or remote execution only when real use justifies additional state and security complexity.
-
-GitHub Apps/webhooks, fork contributions, automatic merge/deployment, multi-agent swarms, hosted execution, paid-API fallback, and unlimited autonomous repair are outside the first release.
+1. Record an authenticated Issue-to-PR workflow on supported Linux, including publication refusal and recovery in a disposable repository. This is a follow-up for stable release and is nonblocking for the first beta. [Linux workflow #19](https://github.com/tutuu9/AgentGate/issues/19).
+2. Evaluate a Claude Code adapter against the same authentication and permission contract. [Adapter #4](https://github.com/tutuu9/AgentGate/issues/4) and [v0.3 milestone](https://github.com/tutuu9/AgentGate/milestone/3).
+3. Expand compatibility as measurements support additional Codex versions, macOS or WSL, and richer offline toolchains.
+4. Consider queues, team use, or remote execution if real use justifies the added state and permission requirements.

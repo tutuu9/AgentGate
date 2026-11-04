@@ -1,6 +1,8 @@
 # Local web interface acceptance
 
-This record covers [issue #3](https://github.com/tutuu9/AgentGate/issues/3) and its subsequent native Windows web acceptance in [issue #9](https://github.com/tutuu9/AgentGate/issues/9). The earlier browser fixture evidence and the real native observations below are distinct. The existing [platform acceptance record](acceptance.md) and Linux workflow block still apply.
+The proposed first public beta (`0.1.0-beta.1`) includes the local web interface. On Windows MXC, the installed interface completed a real Issue-to-draft-PR workflow, including publication refusal and restart recovery. [Web implementation #3](https://github.com/tutuu9/AgentGate/issues/3) and [Windows web acceptance #9](https://github.com/tutuu9/AgentGate/issues/9).
+
+On supported Ubuntu, workflows require successful live preflight and separate ChatGPT authentication. The 2026-11-02 native run verified filesystem and network isolation, process lifecycle, Node IPC, and offline toolchain behavior with an unauthenticated profile and no model calls. Recording an authenticated Linux Issue-to-PR run is a follow-up for stable release. [Platform acceptance](acceptance.md) and [Linux workflow follow-up #19](https://github.com/tutuu9/AgentGate/issues/19).
 
 ## Implemented boundary
 
@@ -15,7 +17,7 @@ This record covers [issue #3](https://github.com/tutuu9/AgentGate/issues/3) and 
 
 `test/web.test.ts` drives real local HTTP requests through the real workflow/store with fake agent, sandbox, and GitHub boundaries. These tests exercise approvals, retries and contention, cancellation and recovery, request protection, and inspection behavior. They do not invoke a model or establish real filesystem/network isolation.
 
-`test/cli.test.ts` verifies the public command surface and rejects invalid or misplaced web options before creating state. `test/manual/verify-web-package.ts` starts an installed package without a TTY, fetches all bundled assets, and reads an authenticated empty state. Ordinary Windows/Ubuntu CI runs that package check after the required quality checks.
+`test/cli.test.ts` verifies the public command surface and rejects invalid or misplaced web options before creating state. Windows and Ubuntu CI install the tarball in a fresh prefix. `test/manual/verify-web-package.ts` starts the npm-installed command without a TTY, fetches all bundled assets, reads the empty state using the local web token, and verifies shutdown.
 
 ## Recorded local verification
 
@@ -27,7 +29,7 @@ On Windows with Node 24.13.0 and npm 11.6.2:
 - The browser fixture completed plan approval, dependency readiness, checks/review, exact-commit publication approval, and a separately approved ordinary-PR fallback. Reload retained a pending plan, and polling preserved typed revision feedback.
 - Hostile HTML in an issue title remained literal text, with no injected image element. Browser error logs were empty. A 390-pixel viewport had no horizontal document overflow; the viewport override was reset after inspection.
 
-The browser used fake provider, sandbox, and GitHub adapters with disposable data. No real PR or model call was made by that fixture. A passing web fixture is not evidence of a new authenticated native model run, production deployment, or stable release. Ordinary Windows/Ubuntu CI remains the cross-platform quality gate; Linux native acceptance remains deferred.
+The browser used fake provider, sandbox, and GitHub adapters with disposable data. Linux native acceptance was still deferred at the time of this fixture. The later Windows run below exercised the authenticated browser workflow. The [platform acceptance record](acceptance.md) covers the subsequent native Linux work.
 
 ## Native Windows web acceptance: 2026-10-31, completed
 
@@ -76,4 +78,4 @@ This shutdown observation applies to waiting for approval. It does not establish
 - The completed run retained `ordinaryPrApproved: false` and `repairAttempts: 0`; its execution lock was absent. Existing runs, worktrees, and earlier fixture PRs were preserved.
 - The browser displayed the completed run and reported no browser errors.
 
-Native Windows web acceptance for these scenarios is complete. No real ordinary-PR fallback was attempted; its separate approval gate retains the earlier HTTP and fake-browser evidence. This record does not declare a stable release, extend the measured native results to other environments, or change the deferred Linux and Claude Code work.
+Native Windows web acceptance for these scenarios is complete. The fixture repository supported draft PRs, so the ordinary-PR fallback and its separate approval gate have HTTP and fake-browser coverage only.

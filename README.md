@@ -2,7 +2,9 @@
 
 A local TypeScript controller with CLI and browser interfaces that takes a selected GitHub Issue through an approved plan, isolated coding work, checks, review, and a separately approved pull request.
 
-**Status: implementation preview (`0.1.0-dev.0`). Real Windows MXC workflow and recovery acceptance passed. Combined native Linux lifecycle, isolation, Node compatibility, and offline toolchain checks passed. Linux workflows are enabled on the supported environment when every live preflight check and separate authentication pass. No authenticated Linux workflow or stable release is claimed.** See the [acceptance record](docs/acceptance.md) for evidence and outstanding checks. Mocked adapter tests do not establish real isolation.
+**`0.1.0-beta.1` is the proposed first public beta.** The candidate includes the CLI and local web interface in one installable GitHub prerelease tarball. The maintainer reviews the candidate and its checksum before publication. [Release notes](CHANGELOG.md) · [Release preparation](https://github.com/tutuu9/AgentGate/issues/18)
+
+Windows MXC has recorded authenticated CLI and browser workflows through draft PR creation, including refusal and recovery. On the supported Ubuntu environment, native checks passed for filesystem and network isolation, process lifecycle, Node compatibility, and offline project checks. These Linux checks ran without authentication or a model call. An authenticated Linux Issue-to-PR run is tracked separately. [Platform evidence](docs/acceptance.md) · [Browser evidence](docs/web-acceptance.md) · [Linux follow-up #19](https://github.com/tutuu9/AgentGate/issues/19)
 
 Windows uses explicit MXC isolation with networking disabled. The earlier legacy Windows attempt with Codex 0.154.0 failed the outside-file read and loopback-network boundaries; that backend is no longer selected. Every environment must pass the real probes before model execution. See the [acceptance record](docs/acceptance.md) for measured results.
 
@@ -41,9 +43,38 @@ Controller npm checks support the standard `node_modules/npm` installation layou
 
 macOS, GitHub Enterprise hosts, cross-repository forks, hosted workers, webhooks, and Claude Code are not implemented in this preview.
 
+## Install the beta tarball
+
+Use Node.js 24 and npm. Once the maintainer publishes the prerelease, download `agentgate-0.1.0-beta.1.tgz` and `SHA256SUMS` from the same GitHub release into an empty directory. For candidate review, use the exact artifact and checksum identified in the preparation PR. The following commands compare the SHA-256 digest and filename before installing into `./agentgate-beta`. [GitHub releases](https://github.com/tutuu9/AgentGate/releases)
+
+**Windows PowerShell**
+
+```powershell
+$archive = 'agentgate-0.1.0-beta.1.tgz'
+$digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive -ErrorAction Stop).Hash.ToLowerInvariant()
+$expected = (Get-Content -LiteralPath .\SHA256SUMS -Raw -ErrorAction Stop).TrimEnd()
+if ($expected -cne "$digest  $archive") { throw 'SHA-256 verification failed.' }
+npm.cmd install --prefix .\agentgate-beta --ignore-scripts ".\$archive"
+if ($LASTEXITCODE -ne 0) { throw 'Installation failed.' }
+.\agentgate-beta\node_modules\.bin\agentgate.cmd --version
+.\agentgate-beta\node_modules\.bin\agentgate.cmd --help
+```
+
+**Ubuntu**
+
+```sh
+archive=agentgate-0.1.0-beta.1.tgz
+sha256sum "$archive" | diff - SHA256SUMS &&
+  npm install --prefix ./agentgate-beta --ignore-scripts "./$archive" &&
+  ./agentgate-beta/node_modules/.bin/agentgate --version &&
+  ./agentgate-beta/node_modules/.bin/agentgate --help
+```
+
+`--version` should print `0.1.0-beta.1`. Use that same launcher for the `agentgate` commands below, or add its `node_modules/.bin` directory to your PATH. Installing the tarball can require registry access for its runtime dependency. Once installed, help and version work offline. To run an Issue workflow, configure the separate GitHub and ChatGPT logins below and run `agentgate doctor`.
+
 ## Install from source
 
-No published npm version is assumed. From a trusted checkout:
+From a trusted checkout, build and link the CLI locally.
 
 ```sh
 git clone https://github.com/tutuu9/AgentGate.git

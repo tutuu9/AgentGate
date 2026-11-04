@@ -1,6 +1,6 @@
 # Contributing
 
-AgentGate is currently an implementation preview. Start with [AGENTS.md](AGENTS.md), the shared contributor and coding-agent instructions. Keep code, documentation, issues, pull requests, and commits in English.
+AgentGate is preparing its first public beta. Start with [AGENTS.md](AGENTS.md), the shared contributor and coding-agent instructions. Keep code, documentation, issues, pull requests, and commits in English.
 
 ## Local development
 

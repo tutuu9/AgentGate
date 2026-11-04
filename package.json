@@ -1,6 +1,6 @@
 {
   "name": "agentgate",
-  "version": "0.1.0-dev.0",
+  "version": "0.1.0-beta.1",
   "description": "Local, human-approved GitHub Issue-to-PR workflows",
   "type": "module",
   "license": "MIT",
