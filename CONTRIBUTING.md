@@ -13,6 +13,10 @@ npm run check
 
 The check command runs formatting validation, ESLint, TypeScript, behavior tests, and the build. `npm run format` formats the repository; run it deliberately and review unrelated changes before committing. Tests must use fake model providers and disposable local fixtures. Do not add credentials or live model calls to the test suite.
 
+Each build removes this checkout's `dist` before compiling and copying web assets. Cleanup resolves the project from the script location, refuses a redirected or non-directory `dist`, and leaves source, state, worktrees, and other directories intact. A disposable regression fixture seeds stale output, runs the normal build, and verifies the resulting tarball manifest.
+
+Package CI checks `npm pack --json` output with `scripts/verify-package.mjs`. The expected manifest comes from current TypeScript source paths, the supported compiler output layout, bundled web assets, and an explicit public-document list. Update that list deliberately when adding public documents; unexpected or missing entries fail the check. Windows and Ubuntu then install into a fresh prefix containing spaces and execute npm's actual command launcher for metadata and web smoke checks, including authenticated state access and server shutdown.
+
 Prefer meaningful behavior tests: changed approval data, interruption and recovery, malformed external results, process failures, and denied operations. A passing fake sandbox test proves adapter behavior only. Real permission claims belong in the separate [acceptance record](docs/acceptance.md).
 
 The temporary `minimatch@<11.0.1` override pins affected versions to `11.0.4` for [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249). It currently covers only the development dependencies of ESLint, `@eslint/config-array`, and `@typescript-eslint/typescript-estree`. The selector targets the advisory's affected version range. Upstream consumer releases still request minimatch 10.x. Because this crosses a major version, `test/toolchain.test.ts` exercises actual lint file selection, ignores, TypeScript diagnostics, and project-service allowlist behavior on Node.js 24.

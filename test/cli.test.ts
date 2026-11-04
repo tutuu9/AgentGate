@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,14 @@ test('CLI help describes workflow and metadata commands', () => {
 
 test('source CLI reports package metadata without credentials or state initialization', async () => {
   await verifyCliMetadata(fileURLToPath(new URL('../src/cli/main.ts', import.meta.url)));
+});
+
+test('CLI launches when its entrypoint is reached through a directory link', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'agentgate-linked-cli-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const linked = join(root, 'linked project');
+  await symlink(fileURLToPath(new URL('../', import.meta.url)), linked, 'junction');
+  await verifyCliMetadata(join(linked, 'src/cli/main.ts'));
 });
 
 test('web rejects invalid ports and misplaced options before initializing state', async (t) => {

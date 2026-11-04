@@ -4,8 +4,12 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isolatedEnvironment, packageCommand, packageTarget } from './package-command.ts';
 
-export async function verifyCliMetadata(entrypoint: string): Promise<void> {
+export async function verifyCliMetadata(
+  entrypoint: string,
+  installedPrefix?: string,
+): Promise<void> {
   const cliPath = resolve(entrypoint);
   const manifest: unknown = JSON.parse(
     await readFile(new URL('../../package.json', pathToFileURL(cliPath)), 'utf8'),
@@ -19,25 +23,14 @@ export async function verifyCliMetadata(entrypoint: string): Promise<void> {
       join(fixture, 'package.json'),
       JSON.stringify({ name: 'unrelated-cwd', version: '0.0.0-unrelated-cwd' }),
     );
-    const env: NodeJS.ProcessEnv = {
-      SystemRoot: process.env.SystemRoot,
-      PATH: '',
-      HOME: join(fixture, 'home'),
-      USERPROFILE: join(fixture, 'home'),
-      APPDATA: join(fixture, 'appdata'),
-      LOCALAPPDATA: join(fixture, 'localappdata'),
-      XDG_CONFIG_HOME: join(fixture, 'config'),
-      XDG_STATE_HOME: join(fixture, 'state'),
-      AGENTGATE_HOME: join(fixture, 'agentgate-home'),
-      CODEX_HOME: join(fixture, 'codex-home'),
-      GH_CONFIG_DIR: join(fixture, 'gh-home'),
-      AGENTGATE_CODEX_PATH: join(fixture, 'missing-codex'),
-      AGENTGATE_GH_PATH: join(fixture, 'missing-gh'),
-    };
+    const env = isolatedEnvironment(fixture);
     for (const args of [['--version'], ['--help'], []]) {
-      const result = spawnSync(process.execPath, [cliPath, ...args], {
+      const invocation = packageCommand({ entrypoint: cliPath, installedPrefix }, args, env);
+      const result = spawnSync(invocation.command, invocation.args, {
         cwd: fixture,
-        env,
+        env: invocation.env,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        windowsHide: true,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 10_000,
@@ -59,8 +52,7 @@ export async function verifyCliMetadata(entrypoint: string): Promise<void> {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const entrypoint = process.argv[2];
-  if (!entrypoint) throw new Error('Provide the AgentGate CLI entrypoint.');
-  await verifyCliMetadata(entrypoint);
+  const target = packageTarget(process.argv.slice(2));
+  await verifyCliMetadata(target.entrypoint, target.installedPrefix);
   process.stdout.write('CLI version and help match package metadata without creating state.\n');
 }
