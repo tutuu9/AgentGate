@@ -1,0 +1,102 @@
+name: Beta candidate
+
+on:
+  pull_request:
+    paths:
+      - package.json
+      - package-lock.json
+      - .github/workflows/beta-candidate.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  package:
+    name: Package candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.candidate.outputs.version }}
+      artifact: ${{ steps.candidate.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          persist-credentials: false
+      - id: candidate
+        name: Select beta version from the candidate commit
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          version=$(node -p 'const v = require("./package.json").version; /^\d+\.\d+\.\d+-beta\.\d+$/.test(v) ? v : ""')
+          if [[ -n "$version" ]]; then
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "artifact=agentgate-$version-$SOURCE_COMMIT-attempt$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.candidate.outputs.version != ''
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+      - if: steps.candidate.outputs.version != ''
+        name: Build, inspect and checksum the tarball
+        env:
+          VERSION: ${{ steps.candidate.outputs.version }}
+        run: |
+          npm ci
+          npm run build
+          mkdir "$RUNNER_TEMP/beta-candidate"
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP/beta-candidate" > "$RUNNER_TEMP/pack.json"
+          node scripts/verify-package.mjs "$RUNNER_TEMP/pack.json"
+          cd "$RUNNER_TEMP/beta-candidate"
+          sha256sum "agentgate-$VERSION.tgz" > SHA256SUMS
+          echo "Source commit: $SOURCE_COMMIT" >> "$GITHUB_STEP_SUMMARY"
+          cat SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
+      - if: steps.candidate.outputs.version != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.candidate.outputs.artifact }}
+          path: |
+            ${{ runner.temp }}/beta-candidate/agentgate-${{ steps.candidate.outputs.version }}.tgz
+            ${{ runner.temp }}/beta-candidate/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
+  install:
+    name: Install candidate / ${{ matrix.os }}
+    needs: package
+    if: needs.package.outputs.version != ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.package.outputs.artifact }}
+          path: ${{ runner.temp }}/beta-candidate
+      - name: Verify and install the shared artifact and run its launchers
+        env:
+          VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          (cd "$RUNNER_TEMP/beta-candidate" && sha256sum --check --strict SHA256SUMS)
+          prefix="$RUNNER_TEMP/agentgate beta install"
+          npm install --ignore-scripts --no-audit --no-fund --prefix "$prefix" "$RUNNER_TEMP/beta-candidate/agentgate-$VERSION.tgz"
+          node test/manual/verify-cli-package.ts --installed-prefix "$prefix"
+          node test/manual/verify-web-package.ts --installed-prefix "$prefix"

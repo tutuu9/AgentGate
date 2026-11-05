@@ -1,10 +1,27 @@
 # Acceptance evidence
 
-Record evidence for a specific commit and environment. Date of this initial record: **2026-10-30**. The project is an implementation preview; this document does not declare a stable release or extend measured isolation results to untested environments.
+This record began on **2026-10-30**. Each result applies to the named commit and environment.
 
 The maintainer authorized live Windows testing on 2026-10-30 using a separately authenticated ChatGPT profile, GPT-6.1 Sol, and high reasoning effort. The initial Codex 0.154.0 legacy sandbox failed outside-file read and loopback boundaries and correctly blocked model execution. A subsequent explicit offline MXC attempt with Codex 0.166.0 passed the recorded isolation probes and completed a real Issue through planning, implementation, checks, independent review, and an explicitly approved draft PR. Real refusal, cancellation, cleanup, and publication recovery subsequently passed; [Issue #2](https://github.com/tutuu9/AgentGate/issues/2) is closed. The 2026-11-02 Linux runs passed combined lifecycle, filesystem/network, Node IPC, helper-policy, and offline toolchain checks without authentication or model calls. Ordinary Windows/Ubuntu CI passed on merged main `fab2054`. All seven criteria of [Issue #1](https://github.com/tutuu9/AgentGate/issues/1) are fulfilled in the recorded environments. Supported Linux execution still requires successful live preflight and separate authentication. No authenticated Linux Issue-to-PR workflow is claimed or required by issue #1.
 
-## Current evidence
+## First public beta preparation, 2026-11-04
+
+The proposed `0.1.0-beta.1` candidate starts from main `016cdd64e1e4847830f040a14e2605086851a833`. All four prerequisites merged before qualification.
+
+| Issue                                                | Merged change                                                                                                             |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| [#14](https://github.com/tutuu9/AgentGate/issues/14) | Publication credential validation, [PR #20](https://github.com/tutuu9/AgentGate/pull/20) at `336daab`                     |
+| [#15](https://github.com/tutuu9/AgentGate/issues/15) | Development toolchain advisory, [PR #21](https://github.com/tutuu9/AgentGate/pull/21) at `c514ec9`                        |
+| [#16](https://github.com/tutuu9/AgentGate/issues/16) | CLI package version, [PR #22](https://github.com/tutuu9/AgentGate/pull/22) at `62558db`                                   |
+| [#17](https://github.com/tutuu9/AgentGate/issues/17) | Clean builds, manifest checks and installed launchers, [PR #23](https://github.com/tutuu9/AgentGate/pull/23) at `016cdd6` |
+
+On 2026-11-04 the GitHub API confirmed that `main` requires a PR, resolved conversations and up-to-date Windows and Ubuntu checks. The rules include administrators, disable force pushes and deletion, and require zero external approvals for this solo repository. Private vulnerability reporting was enabled. [Private reporting channel](https://github.com/tutuu9/AgentGate/security/advisories/new).
+
+On the same date, a clean `npm ci` on Windows with Node.js 24.13.0 and npm 11.6.2 used the candidate lockfile (SHA-256 `de1f15582de2b4ca7988f6de1434b50fc6bc3a58fb9ef9d044f7828f0c4fcf6b`). Fresh online `npm audit` and `npm audit --omit=dev` checks both returned zero known vulnerabilities.
+
+The release preparation PR records the tested source commit, CI runs and SHA-256 of the candidate tarball. Its qualification workflow builds the archive once and tests the same archive and checksum on both platforms. The review bundle contains `agentgate-0.1.0-beta.1.tgz` and `SHA256SUMS`. The maintainer reviews this handoff before choosing whether to tag and publish. [Release preparation #18](https://github.com/tutuu9/AgentGate/issues/18).
+
+## Prior acceptance evidence
 
 | Area                                       | Observation                                                                                                                                                                                                                                                                                                                                | Status                                                                                                                                                                                                                   |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

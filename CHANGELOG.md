@@ -1,8 +1,19 @@
 # Changelog
 
-User-visible changes are recorded here. Versions follow semantic versioning once the public CLI/state contract is released. Entries under Unreleased are not proof that a release was published.
+User-visible changes and release notes are recorded here.
 
-## Unreleased
+## 0.1.0-beta.1 (proposed)
+
+The first public beta candidate lets you take a GitHub Issue from a local clone to a draft PR using the CLI or a private browser interface. You approve the plan and checks before implementation, then inspect the diff, check results, and independent review before authorizing publication of a specific commit. You can decline publication, keep the candidate locally, and resume the run later.
+
+The candidate is prepared for a GitHub prerelease as `agentgate-0.1.0-beta.1.tgz`. Verify its SHA-256 against the accompanying `SHA256SUMS` before installing with Node.js 24 and npm. The installed `agentgate --version` command reports `0.1.0-beta.1`. [Installation and verification](README.md#install-the-beta-tarball)
+
+Issue workflows require GitHub CLI login for the controller, a separate ChatGPT login for pinned Codex, and passing live `agentgate doctor` checks. Prepare project dependencies in the worktree before the agent runs. Repository commands run offline, while the controller needs connectivity for GitHub operations and the model requires access to its service. [Setup and prerequisites](README.md#requirements)
+
+- **Windows** uses Codex CLI `0.166.0` on an MXC-capable host. Authenticated CLI and browser runs reached real draft PRs. Recorded scenarios include publication refusal and recovery after a lost publication response. [Windows workflow evidence](docs/acceptance.md) · [Browser evidence](docs/web-acceptance.md)
+- **Linux** uses Codex CLI `0.154.0` on supported Ubuntu 24.04 x86_64 with bubblewrap 0.9, Python 3.12, systemd 255 user services and cgroup v2. Native checks cover isolation, process shutdown, Node streams and IPC, and offline toolchain commands. Those checks ran without model credentials. An authenticated Linux Issue-to-PR run remains a follow-up. [Linux evidence](docs/acceptance.md) · [Issue #19](https://github.com/tutuu9/AgentGate/issues/19)
+
+Report suspected vulnerabilities privately through [GitHub private vulnerability reporting](https://github.com/tutuu9/AgentGate/security/advisories/new).
 
 ### Added
 
@@ -37,7 +48,7 @@ User-visible changes are recorded here. Versions follow semantic versioning once
 - Support npm and nested Node script startup inside Windows MXC with fixed symlink-preservation flags while retaining default-deny filesystem permissions.
 - Preserve the actual Windows username when refreshing the native Codex sandbox; ignore caller-supplied identity overrides while continuing to exclude credentials.
 
-### Status
+### Preview acceptance history
 
 - All seven native Windows/Linux acceptance criteria in #1 are fulfilled after merging #6 and #7. [Native acceptance on main](https://github.com/tutuu9/AgentGate/actions/runs/41404729439) and [ordinary Windows/Ubuntu CI](https://github.com/tutuu9/AgentGate/actions/runs/41403589070) passed at `fab2054` on 2026-11-02. Historical failed candidates and the unchanged Windows retry remain recorded separately.
-- Package version `0.1.0-dev.0` is an implementation preview. Windows MXC isolation, real Issue-to-draft-PR runs, and controlled workflow recovery passed. Linux native filesystem/network isolation, six lifecycle scenarios, captured Node streams/fork IPC, and offline toolchain diagnostics passed in the recorded environment. No authenticated Linux workflow, stable release, or public npm publication is claimed.
+- During the `0.1.0-dev.0` preview, Windows MXC isolation, real Issue-to-draft-PR runs, and controlled workflow recovery passed. Linux native filesystem/network isolation, six lifecycle scenarios, captured Node streams/fork IPC, and offline toolchain diagnostics passed in the recorded environment.
