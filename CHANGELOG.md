@@ -10,7 +10,7 @@ User-visible changes and release notes are recorded here.
 - `--accept-claude-permission-boundary` and a matching browser checkbox. Claude Code has no OS-level isolation for its file tools, so AgentGate limits it to file tools inside the worktree through Claude Code's permission rules, and runs it only after this explicit, per-invocation acceptance. [ADR 009](docs/decisions.md#adr-009-claude-code-provider-behind-an-accepted-permission-boundary)
 - `agentgate doctor --provider claude` reports the Claude Code version, subscription login and boundary acceptance.
 
-Mandatory checks still run in the verified Codex sandbox. Authenticated Claude Code runs and Linux compatibility have not been recorded yet. [Acceptance evidence](docs/acceptance.md#claude-code-provider-compatibility-2026-11-21)
+Mandatory checks still run in the verified Codex sandbox. An authenticated Windows run reached a draft PR; Linux compatibility has not been recorded yet. [Acceptance evidence](docs/acceptance.md#claude-code-provider-compatibility-2026-11-21)
 
 ## 0.1.0-beta.1 — 2026-11-05
 
