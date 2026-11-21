@@ -213,6 +213,8 @@ test('Claude runner passes task data through stdin from the worktree for every s
     assert.ok(!options.args.some((argument) => argument.includes('$(injection)')));
     const schema = JSON.parse(options.args[options.args.indexOf('--json-schema') + 1]!);
     assert.equal(schema.type, 'object');
+    // Claude Code 2.1.287 refused the 2020-12 meta-schema in the first live run.
+    assert.equal(schema.$schema, 'http://json-schema.org/draft-07/schema#');
   }
   assert.ok(stages[1]!.args.includes('Edit(./**)'));
   assert.ok(!stages[0]!.args.includes('Edit(./**)') && !stages[2]!.args.includes('Edit(./**)'));

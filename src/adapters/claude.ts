@@ -113,6 +113,11 @@ export function claudeConfigDirectory(home: string): string {
   return join(resolve(home), 'claude');
 }
 
+/** Claude Code 2.1.287 rejects the 2020-12 meta-schema that Zod emits by default. */
+export function claudeResultSchema(stage: AgentStage): string {
+  return JSON.stringify(z.toJSONSchema(STAGE_SCHEMA[stage], { target: 'draft-7' }));
+}
+
 /** Every argument is controller-owned; task data travels only through stdin. */
 export function claudeArguments(stage: AgentStage, schema: string, options: ModelOptions = {}) {
   const tools = stage === 'implement' ? [...READ_TOOLS, ...EDIT_TOOLS] : [...READ_TOOLS];
@@ -258,7 +263,7 @@ export class ClaudeRunner implements AgentRunner {
     let uncertain = false;
     try {
       signal?.throwIfAborted();
-      const schema = JSON.stringify(z.toJSONSchema(STAGE_SCHEMA[stage]));
+      const schema = claudeResultSchema(stage);
       const result = await this.executor({
         command: this.claudePath,
         args: claudeArguments(stage, schema, this.modelOptions),
