@@ -6,7 +6,7 @@ The maintainer authorized live Windows testing on 2026-10-30 using a separately 
 
 ## Claude Code provider compatibility, 2026-11-21
 
-[Issue #4](https://github.com/tutuu9/AgentGate/issues/4) adds Claude Code behind an explicitly accepted permission boundary ([ADR 009](decisions.md#adr-009-claude-code-provider-behind-an-accepted-permission-boundary)). This entry applies to the `feat/claude-adapter` branch before its PR. The offline observation preceded `51bdbda`; the authenticated run used `51bdbda`. The environment was Windows 11 Pro with Node.js 24.13.0 and Claude Code 2.1.287.
+[Issue #4](https://github.com/tutuu9/AgentGate/issues/4) adds Claude Code behind an explicitly accepted permission boundary ([ADR 009](decisions.md#adr-009-claude-code-provider-behind-an-accepted-permission-boundary)). This entry applies to the `feat/claude-adapter` branch before its PR. The offline observation preceded the schema fix; the authenticated run used the fix at pre-rebase commit `51bdbda`. It was later rebased onto docs-only main changes as `652a72d`, with identical source. The environment was Windows 11 Pro with Node.js 24.13.0 and Claude Code 2.1.287.
 
 ### Offline observation without a login
 
@@ -22,10 +22,10 @@ This observation was offline and unauthenticated. It used a fresh `CLAUDE_CONFIG
 
 ### Authenticated Windows workflow
 
-The maintainer signed in to the dedicated `~/.agentgate/claude` profile with their Claude subscription through `claude auth login --claudeai`. The CLI built from `feat/claude-adapter` at `51bdbda` ran with `--provider claude --accept-claude-permission-boundary`. Codex 0.166.0 with MXC ran the mandatory checks.
+The maintainer signed in to the dedicated `~/.agentgate/claude` profile with their Claude subscription through `claude auth login --claudeai`. The CLI built from that commit ran with `--provider claude --accept-claude-permission-boundary`. Codex 0.166.0 with MXC ran the mandatory checks.
 
 - **Doctor:** every Codex and sandbox check passed, along with `claude-platform`, `claude-permission-boundary`, `claude-version` and `claude-auth`.
-- **First attempt:** the plan stage exited with code 1 before any model request. Claude Code 2.1.287 rejected `--json-schema` because the schema declared the 2020-12 meta-schema that Zod emits by default. The adapter now sends draft-07 (`51bdbda`), and a test pins this. The run was resumed from its saved `plan` checkpoint.
+- **First attempt:** the plan stage exited with code 1 before any model request. Claude Code 2.1.287 rejected `--json-schema` because the schema declared the 2020-12 meta-schema that Zod emits by default. The adapter now sends draft-07 (`652a72d`), and a test pins this. The run was resumed from its saved `plan` checkpoint.
 - **Plan:** Claude returned a valid structured plan for [fixture Issue #1](https://github.com/tutuu9/agentgate-acceptance-20261030-mxc/issues/1), scoped to `src/clamp.js` and `test/clamp.test.js` with check `npm test`. An accidental terminal input was treated as revision feedback; Claude returned a revised plan, which the maintainer approved.
 - **Implementation:** Claude changed only the two allowed files and reported that it had no shell tool to run tests.
 - **Checks:** the offline MXC `npm test` check passed 3 of 3 tests.
