@@ -4,6 +4,22 @@ This record began on **2026-10-30**. Each result applies to the named commit and
 
 The maintainer authorized live Windows testing on 2026-10-30 using a separately authenticated ChatGPT profile, GPT-6.1 Sol, and high reasoning effort. The initial Codex 0.154.0 legacy sandbox failed outside-file read and loopback boundaries and correctly blocked model execution. A subsequent explicit offline MXC attempt with Codex 0.166.0 passed the recorded isolation probes and completed a real Issue through planning, implementation, checks, independent review, and an explicitly approved draft PR. Real refusal, cancellation, cleanup, and publication recovery subsequently passed; [Issue #2](https://github.com/tutuu9/AgentGate/issues/2) is closed. The 2026-11-02 Linux runs passed combined lifecycle, filesystem/network, Node IPC, helper-policy, and offline toolchain checks without authentication or model calls. Ordinary Windows/Ubuntu CI passed on merged main `fab2054`. All seven criteria of [Issue #1](https://github.com/tutuu9/AgentGate/issues/1) are fulfilled in the recorded environments. Supported Linux execution still requires successful live preflight and separate authentication. No authenticated Linux Issue-to-PR workflow is claimed or required by issue #1.
 
+## Claude Code provider compatibility, 2026-11-21
+
+[Issue #4](https://github.com/tutuu9/AgentGate/issues/4) adds Claude Code behind an explicitly accepted permission boundary ([ADR 009](decisions.md#adr-009-claude-code-provider-behind-an-accepted-permission-boundary)). This entry applies to the `feat/claude-adapter` branch before its PR. The environment was Windows 11 Pro with Node.js 24.13.0 and Claude Code 2.1.287.
+
+The observation was offline and unauthenticated. It used a fresh `CLAUDE_CONFIG_DIR` with no login and made no model request.
+
+| Observation                                    | Result                                                                                                                                                 |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `claude --version` through the agent env       | `2.1.287 (Claude Code)`; `claude-version` passed.                                                                                                      |
+| `claude auth status --json`, no login          | Exit 1, `loggedIn: false`, `authMethod: none`; `claude-auth` blocked. The CLI emits `authMethod: claude.ai` and `apiKeySource` for key-based sessions. |
+| Implementation-stage flags, prompt on stdin    | All adapter flags accepted. The run stopped before inference: exit 1, `type: result`, `subtype: success`, `is_error: true`, "Not logged in".           |
+| Parser on that envelope                        | Rejected as a failed run, because `is_error` is checked as well as `subtype`.                                                                          |
+| `--permission-mode`/`--restricted` in `--help` | Present in 2.1.287, including `dontAsk`, `--permission-prompts none` and `--json-schema`.                                                              |
+
+**Blocked:** No authenticated plan, implementation or review run with a Claude subscription has been recorded. No Linux Claude Code compatibility run has been recorded either. Fake-provider tests in `test/claude.test.ts` exercise orchestration, argument construction, credential stripping and fail-closed doctor behavior only. They are not evidence that Claude Code enforces its permission rules. No OS isolation is claimed for this provider.
+
 ## First public beta preparation, 2026-11-04
 
 The proposed `0.1.0-beta.1` candidate starts from main `016cdd64e1e4847830f040a14e2605086851a833`. All four prerequisites merged before qualification.
