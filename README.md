@@ -4,6 +4,13 @@ A local TypeScript controller with CLI and browser interfaces that takes a selec
 
 **Status:** `0.2.0-beta.2` is the latest public beta, available as a [GitHub prerelease](https://github.com/tutuu9/AgentGate/releases/tag/v0.2.0-beta.2) with the CLI and local web interface in one installable tarball. It adds an optional [Claude Code provider](#use-the-claude-code-provider) next to the default Codex provider. [Release notes](CHANGELOG.md) · [Install](#install-the-beta-tarball)
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/web-ui-dark.png" />
+  <img src=".github/assets/web-ui-light.png" alt="AgentGate browser interface asking for publication approval: the run's repository, branch, exact and base commits, linked issue, and a colored diff, with run history in the sidebar." />
+</picture>
+
+_The [local web interface](#use-the-local-web-interface) waiting for publication approval. The repository, issue and diff are sample data._
+
 ## Key properties
 
 - **Two human gates.** You approve the plan and its checks before any code is written, then separately approve publication of one exact commit. Merging and deployment stay with you.
