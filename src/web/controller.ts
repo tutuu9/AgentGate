@@ -9,7 +9,6 @@ import {
   ResumeRequestSchema,
   StartRequestSchema,
   WebError,
-  type CodexModelOptions,
   type PendingPrompt,
   type PromptReply,
   type ResumeRequest,
@@ -19,12 +18,13 @@ import {
   type WebState,
 } from './contracts.ts';
 import { BrowserInteraction, browserCopy } from './interaction.ts';
+import type { AgentSelection } from '../adapters/providers.ts';
 
 export interface WebControllerOptions {
   store: FileRunStore;
   git: GitHubGateway;
   sandbox: SandboxRunner;
-  createAgent: (options: CodexModelOptions) => AgentRunner;
+  createAgent: (selection: AgentSelection) => AgentRunner;
 }
 
 interface Reservation {
@@ -200,6 +200,8 @@ export class WebController {
         agent: this.options.createAgent({
           model: request.model,
           reasoningEffort: request.reasoningEffort,
+          provider: request.provider,
+          acceptClaudePermissionBoundary: request.acceptClaudePermissionBoundary,
         }),
         ui,
       });
