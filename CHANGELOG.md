@@ -2,6 +2,16 @@
 
 User-visible changes and release notes are recorded here.
 
+## Unreleased
+
+### Added
+
+- Optional Claude Code provider for planning, implementation and review, selected with `--provider claude` or in the browser form; Codex remains the default. It requires Claude Code CLI `2.1.287` on Windows or Linux, signed in by you with your Claude subscription in a separate `claude` profile under the state home. API-key authentication is refused and there is no paid API fallback. [Claude Code provider](README.md#use-the-claude-code-provider)
+- `--accept-claude-permission-boundary` and a matching browser checkbox. Claude Code has no OS-level isolation for its file tools, so AgentGate limits it to file tools inside the worktree through Claude Code's permission rules, and runs it only after this explicit, per-invocation acceptance. [ADR 009](docs/decisions.md#adr-009-claude-code-provider-behind-an-accepted-permission-boundary)
+- `agentgate doctor --provider claude` reports the Claude Code version, subscription login and boundary acceptance.
+
+Mandatory checks still run in the verified Codex sandbox. An authenticated Windows run reached a draft PR; Linux compatibility has not been recorded yet. [Acceptance evidence](docs/acceptance.md#claude-code-provider-compatibility-2026-11-21)
+
 ## 0.1.0-beta.1 — 2026-11-05
 
 The first public beta lets you take a GitHub Issue from a local clone to a draft PR using the CLI or a private browser interface. You approve the plan and checks before implementation, then inspect the diff, check results, and independent review before authorizing publication of a specific commit. You can decline publication, keep the candidate locally, and resume the run later.

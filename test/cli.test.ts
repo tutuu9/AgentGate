@@ -55,6 +55,30 @@ test('web rejects invalid ports and misplaced options before initializing state'
   }
 });
 
+test('CLI requires explicit Claude provider acceptance before initializing state', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentgate-provider-cli-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const home = join(directory, 'state-must-not-exist');
+  const issue = 'https://github.com/a/b/issues/1';
+  for (const [args, message] of [
+    [['run', issue, '--repo', 'x', '--provider', 'claude'], /--accept-claude-permission-boundary/],
+    [['resume', randomUUID(), '--provider', 'claude'], /no OS-level isolation/],
+    [['run', issue, '--repo', 'x', '--accept-claude-permission-boundary'], /only to --provider/],
+    [['run', issue, '--repo', 'x', '--provider', 'gemini'], /codex or claude/],
+    [['status', '--provider', 'claude'], /only supported for run, resume and doctor/],
+    [['web', '--provider', 'claude'], /only supported for run, resume and doctor/],
+  ] as const) {
+    const result = spawnSync(process.execPath, ['src/cli/main.ts', ...args, '--home', home], {
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, message);
+    await assert.rejects(access(home), { code: 'ENOENT' });
+  }
+  const help = spawnSync(process.execPath, ['src/cli/main.ts', '--help'], { encoding: 'utf8' });
+  assert.match(help.stdout, /--provider <codex\|claude>\s+Agent provider \(default: codex\)/);
+});
+
 test('CLI does not offer noninteractive approval bypasses', () => {
   const result = spawnSync(
     process.execPath,

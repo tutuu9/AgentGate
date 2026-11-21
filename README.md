@@ -37,6 +37,7 @@ Windows uses explicit MXC isolation with networking disabled. The earlier legacy
 - A local repository with an `origin` on `github.com` and permission to push a branch and create a PR. Public and private repositories are supported by the workflow; GitHub account and organization policies still apply.
 - **Codex CLI 0.166.0 on Windows or 0.154.0 on Linux**, with ChatGPT authentication in a separate AgentGate profile. Other versions fail the compatibility check until explicitly validated.
 - Native Windows with Microsoft Execution Containers (MXC), or the supported Linux environment below. Windows selects MXC explicitly and blocks execution if the device or managed policy cannot support it; there is no legacy fallback. See [MXC compatibility](https://learn.chatgpt.com/docs/windows/windows-sandbox#mxc-compatibility).
+- Optional: **Claude Code CLI 2.1.287** on Windows or Linux for `--provider claude`, signed in with your Claude subscription in a separate AgentGate profile. This provider runs without OS-level isolation for its file tools; see [Use the Claude Code provider](#use-the-claude-code-provider).
 - Dependencies and check tools that can run offline. The preview targets Node.js/TypeScript repositories and one active run per AgentGate state directory.
 
 Linux execution needs distribution-provided `bubblewrap` and permission to create sandbox namespaces. On Ubuntu 24.04, a missing distro `bwrap-userns-restrict` AppArmor profile can prevent startup; see the [official Linux sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing#prerequisites). Recorded native runs used the packaged profile, preserved the system-wide AppArmor setting, and ran Codex as the ordinary runner user. Every live doctor check and separate ChatGPT authentication remain mandatory.
@@ -51,7 +52,7 @@ Earlier native acceptance found a surviving descendant after cancellation and in
 
 Controller npm checks support the standard `node_modules/npm` installation layout. AgentGate validates that package and runs its selected entry point with the controller's Node.js 24. Only the npm package receives additional read access for those checks; an unsupported layout or a runtime inside the worktree/state directory is rejected.
 
-macOS, GitHub Enterprise hosts, cross-repository forks, hosted workers, webhooks, and Claude Code are not implemented in this preview.
+macOS, GitHub Enterprise hosts, cross-repository forks, hosted workers, and webhooks are not implemented in this preview.
 
 ## Install the beta tarball
 
@@ -174,6 +175,35 @@ After plan approval, the CLI shows the worktree and pauses for dependency prepar
 
 On Windows, agent and check Node processes receive fixed `--preserve-symlinks --preserve-symlinks-main` options so script loading works without reading denied ancestor-directory metadata. Caller-supplied `NODE_OPTIONS` are discarded. This changes module identity for linked packages; projects using linked native modules need their own compatibility checks.
 
+## Use the Claude Code provider
+
+Codex is the default provider. You can instead select the Claude Code CLI explicitly for planning, implementation, and review. Mandatory checks still run in the verified Codex sandbox, so the Codex requirements above still apply.
+
+**Boundary.** Claude Code has no operating-system sandbox for its file tools. Its own sandbox is unavailable on native Windows and covers only shell commands on Linux. AgentGate therefore removes every command-running and web tool and keeps Claude in the worktree through Claude Code's permission rules (`--restricted`, `dontAsk`, no prompts). This is weaker than the Codex boundary: it relies on Claude Code enforcing its own rules. You must accept it explicitly for every `run` and `resume`; there is no persistent setting. See [ADR 009](docs/decisions.md#adr-009-claude-code-provider-behind-an-accepted-permission-boundary).
+
+**Login.** AgentGate runs your installed, unmodified `claude` executable. It never offers its own login and never reads, copies, or stores Claude credentials. Sign in yourself with your Claude subscription in a dedicated profile under the state home:
+
+```powershell
+# PowerShell
+$env:CLAUDE_CONFIG_DIR = Join-Path $HOME '.agentgate/claude'
+claude auth login --claudeai
+```
+
+```sh
+# Linux shell
+CLAUDE_CONFIG_DIR="$HOME/.agentgate/claude" claude auth login --claudeai
+```
+
+For a custom state home, use its `claude` subdirectory instead. AgentGate blocks Console or API-key authentication, any API-key source, and third-party providers. It never falls back to API billing. Your subscription's usage limits still apply. Set `AGENTGATE_CLAUDE_PATH` if the native `claude` executable is not on `PATH`.
+
+```sh
+agentgate doctor --provider claude --accept-claude-permission-boundary
+agentgate run https://github.com/YOUR-OWNER/YOUR-REPO/issues/123 --repo example --provider claude --accept-claude-permission-boundary
+agentgate resume RUN-ID --provider claude --accept-claude-permission-boundary --model sonnet --reasoning-effort high
+```
+
+Doctor reports `claude-permission-boundary` as `BLOCKED` until you accept it, and requires Claude Code exactly `2.1.287`. Provider selection applies only to the current invocation, like model options; a resume without `--provider` uses Codex. The browser form offers the same provider choice and acceptance checkbox.
+
 ## Use the local web interface
 
 Register repositories and their mandatory checks with `agentgate repo add`, then start:
@@ -186,7 +216,7 @@ agentgate web --port 4317 --home /absolute/path/to/agentgate-state
 
 Open the private link printed in the terminal. The server binds only to `127.0.0.1`; the default port `0` chooses a free port. Keep it running while using the browser. Starting the server does not run a doctor, invoke a model, or start a workflow, and does not require an interactive terminal. The same native preflight and authentication checks run before every workflow start or resume.
 
-The browser lists registered repositories and saved runs. Start an issue by URL, optionally select a model and reasoning effort, and review each decision: approve or revise the plan, confirm that you prepared dependencies in the worktree, then inspect the diff, checks, review, exact commit, and proposed PR text before publication. Creating an ordinary PR when a draft is unavailable needs a separate decision. Registration, check configuration, authentication, and cleanup remain CLI tasks.
+The browser lists registered repositories and saved runs. Start an issue by URL, optionally select the provider, model and reasoning effort, and review each decision: approve or revise the plan, confirm that you prepared dependencies in the worktree, then inspect the diff, checks, review, exact commit, and proposed PR text before publication. Creating an ordinary PR when a draft is unavailable needs a separate decision. Registration, check configuration, authentication, and cleanup remain CLI tasks.
 
 The interface polls saved state without changing the Git index. During active work, a diff is available once the workflow presents it for publication approval. For an inactive run, **Inspect diff** takes the same exclusive lock used by the CLI. Another active controller or an uncertain shutdown blocks that inspection instead of modifying a live index.
 
@@ -214,7 +244,7 @@ Exit code `2` reports blocked doctor checks or a saved failed/blocked/cancelled 
 
 ## Boundaries and limitations
 
-Git worktrees separate changes; they are not a security sandbox. Agent and check subprocesses use the native Codex permission boundary. GitHub credentials remain in the controller, and agents do not receive controller credential environment variables. Live verification is still required for each supported environment; see [security](SECURITY.md).
+Git worktrees separate changes; they are not a security sandbox. Codex agent and all check subprocesses use the native Codex permission boundary. The optional Claude Code provider instead relies on Claude Code's own permission rules after your explicit acceptance. GitHub credentials remain in the controller, and agents do not receive controller credential environment variables. Live verification is still required for each supported environment; see [security](SECURITY.md).
 
 The controller records validated structured results and redacted diagnostics rather than raw model reasoning. Redaction is a best-effort safeguard, not proof that arbitrary output contains no secrets. Keep authentication caches, production credentials, and unrelated private files out of the worktree. Local state can contain private Issue text and code-related reports.
 

@@ -45,7 +45,34 @@ test('web workflow requires plan, dependency, and exact-commit publication decis
   assert.equal(run.publicationApproval, run.candidateCommit);
   assert.equal(run.prUrl, 'https://github.com/owner/example/pull/2');
   assert.deepEqual(f.state.stages, ['plan', 'implement', 'review']);
-  assert.deepEqual(f.state.modelOptions, [{ model: 'gpt-6.1-sol', reasoningEffort: 'high' }]);
+  assert.deepEqual(f.state.modelOptions, [
+    {
+      model: 'gpt-6.1-sol',
+      reasoningEffort: 'high',
+      provider: undefined,
+      acceptClaudePermissionBoundary: undefined,
+    },
+  ]);
+});
+
+test('web passes an explicitly accepted Claude provider selection to the agent factory', async (t) => {
+  const f = await webFixture(t);
+  const operation = await f.start({
+    ...f.startBody(),
+    provider: 'claude',
+    acceptClaudePermissionBoundary: true,
+    model: 'sonnet',
+  });
+  await f.respond(await f.prompt('plan'), 'reject');
+  await f.finished(operation.id);
+  assert.deepEqual(f.state.modelOptions, [
+    {
+      model: 'sonnet',
+      reasoningEffort: undefined,
+      provider: 'claude',
+      acceptClaudePermissionBoundary: true,
+    },
+  ]);
 });
 
 test('plan feedback creates a fresh decision and rejection never implements', async (t) => {
@@ -431,6 +458,10 @@ test('malformed, oversized and authority-bearing bodies fail before workflow exe
     { repo: '../state' },
     { model: 'bad model' },
     { reasoningEffort: 'unknown' },
+    { provider: 'claude' },
+    { provider: 'claude', acceptClaudePermissionBoundary: false },
+    { provider: 'codex', acceptClaudePermissionBoundary: true },
+    { provider: 'other' },
   ]) {
     const rejected = await f.send('/api/runs', {
       method: 'POST',

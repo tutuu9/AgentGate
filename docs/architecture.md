@@ -10,11 +10,11 @@ AgentGate is a local controller with explicit adapters around external tools. CL
 | `src/core/workflow.ts`  | Durable checkpoints, approvals, scoped execution, checks/review, repair budget, and publication.          |
 | `src/core/store.ts`     | Local schema-validated state, atomic replacement, redacted event persistence, and exclusive process lock. |
 | `src/core/safety.ts`    | Approval fingerprinting, scope boundaries, credential redaction, and safe terminal output.                |
-| `src/adapters/`         | Argument-based process execution, Git/GitHub operations, Codex invocation, and native sandbox preflight.  |
+| `src/adapters/`         | Process execution, Git/GitHub operations, Codex/Claude invocation, provider selection, sandbox preflight. |
 | `src/cli/`              | Commands, repository registration, terminal rendering, and human decisions.                               |
 | `src/web/`              | Authenticated loopback HTTP, browser decisions, operation coordination, and local static assets.          |
 
-The core uses `AgentRunner`, `SandboxRunner`, `GitHubGateway`, and `UserInteraction` interfaces so tests can exercise behavior with fake providers. Terminal and browser interaction adapters share the same workflow authority. A future Claude adapter can use the existing provider seam.
+The core uses `AgentRunner`, `SandboxRunner`, `GitHubGateway`, and `UserInteraction` interfaces so tests can exercise behavior with fake providers. Terminal and browser interaction adapters share the same workflow authority. `src/adapters/providers.ts` builds the selected `AgentRunner`: Codex by default, or Claude Code when explicitly selected with its permission-boundary acceptance. Both adapters share the stage prompt and result schemas in `src/adapters/agent-prompt.ts`. Checks always use the Codex `SandboxRunner`.
 
 ## Local browser boundary
 
@@ -65,6 +65,7 @@ runs/<uuid>.json        Versioned run, results, approvals, and checkpoint
 events/<uuid>.jsonl     Redacted transition events
 worktrees/<uuid>/      Isolated Git working directory
 codex/                 Dedicated native Codex authentication profile
+claude/                Dedicated native Claude Code profile (CLAUDE_CONFIG_DIR), when used
 runtime/               Temporary controller-created launch/probe directories
 run.lock               Exclusive active-process lease
 ```
@@ -106,6 +107,31 @@ The private bubblewrap shim and supervision records are outside sandbox filesyst
 Linux state placement is checked before creating the session. State cannot be at or beneath the target worktree, Node executable directory, or Codex 0.154.0's minimal read roots: `/bin`, `/sbin`, `/usr`, `/etc`, `/lib`, `/lib64`, `/nix/store`, and `/run/current-system/sw`. Existing aliases are resolved for this check; the npm runtime separately rejects state overlap. The ordinary layout with managed worktrees below state remains supported. These constraints keep private sibling directories outside readable mounts. A deny on the state parent is not used because the pinned backend would also mask the read-only launcher.
 
 Native isolation and its limitations require real acceptance evidence. Mocked subprocess responses, generated configuration, and prompts alone cannot prove that an operating-system boundary is enforced.
+
+## Claude Code provider
+
+`ClaudeRunner` is an `AgentRunner` for the user's installed Claude Code CLI 2.1.287 on Windows and Linux ([ADR 009](decisions.md#adr-009-claude-code-provider-behind-an-accepted-permission-boundary)). Unlike Codex, Claude Code has no operating-system sandbox for its file tools, so this provider runs under an explicitly accepted permission-rule boundary.
+
+Before every stage, its doctor checks four things:
+
+- the platform is Windows or Linux;
+- the user accepted the boundary for this invocation;
+- `claude --version` reports exactly the pinned version;
+- `claude auth status --json` reports a first-party `claude.ai` subscription login with no API-key source.
+
+A missing or unexpected value blocks the stage before any model call. The runner uses the same controller-allowlisted environment as Codex agents. It removes the Codex variables and sets `CLAUDE_CONFIG_DIR` to the state home's `claude/` profile. It also disables the autoupdater and nonessential traffic.
+
+Each stage runs `claude -p` with the worktree as its working directory and the task data on stdin. Every argument is fixed by the controller:
+
+- `--restricted` removes command-running tools and WebFetch, ignores user, project and local settings files, and confines file tools to the working directory.
+- `--tools` allows `Read,Glob,Grep`; implementation adds `Edit,Write`, plus an `Edit(./**)` allow rule.
+- `dontAsk` permissions with `--permission-prompts none` deny anything else.
+- Deny rules also cover command, web and subagent tools, and edits to `.git`, `.claude`, `.agents`, `.codex` and `.aws`.
+- MCP servers, hooks, slash commands and session persistence are disabled. Settings force `claudeai` login.
+
+The runner accepts only a `result` envelope with `subtype: success`, `is_error: false` and a `structured_output` that satisfies the stage's Zod schema. It discards the raw envelope and transcript text. A private scratch directory under `runtime/` provides temporary files and is retained only after uncertain process termination.
+
+This boundary is enforced by Claude Code itself, not by the operating system, so the Codex doctor's filesystem and network observations do not apply to it. The model process needs its normal Anthropic connection. Process shutdown uses the controller's process-tree termination rather than Linux cgroup supervision. Mandatory checks still run only in the verified Codex sandbox, so Codex prerequisites stay required.
 
 ## Linux process supervision
 

@@ -1,17 +1,19 @@
 import { z } from 'zod';
-import { CodexModelOptionsSchema } from '../adapters/codex.ts';
+import { ModelOptionsSchema } from '../adapters/agent-prompt.ts';
+import { checkProviderSelection, ProviderSelectionShape } from '../adapters/providers.ts';
 import { RepoSchema, type RepoProfile, type Run } from '../core/contracts.ts';
 import type { PullRequestDraft } from '../core/publication.ts';
 
-export type CodexModelOptions = z.infer<typeof CodexModelOptionsSchema>;
-
-export const ResumeRequestSchema = CodexModelOptionsSchema.extend({
+const ResumeRequestShape = ModelOptionsSchema.extend(ProviderSelectionShape).extend({
   requestId: z.string().uuid(),
-}).strict();
-export const StartRequestSchema = ResumeRequestSchema.extend({
+});
+export const ResumeRequestSchema = ResumeRequestShape.strict().superRefine(checkProviderSelection);
+export const StartRequestSchema = ResumeRequestShape.extend({
   repo: RepoSchema.shape.name,
   issueUrl: z.string().url().max(2_048),
-}).strict();
+})
+  .strict()
+  .superRefine(checkProviderSelection);
 export const PromptReplySchema = z
   .object({
     binding: z.string().min(1).max(256),

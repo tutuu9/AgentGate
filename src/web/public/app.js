@@ -135,7 +135,22 @@ function applyAvailability() {
 function modelOptions() {
   const model = byId('model').value.trim();
   const reasoningEffort = byId('reasoning-effort').value;
-  return { ...(model ? { model } : {}), ...(reasoningEffort ? { reasoningEffort } : {}) };
+  const provider = byId('provider').value;
+  return {
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    provider,
+    // The server rejects a Claude request unless the user ticked the explicit acceptance.
+    ...(provider === 'claude'
+      ? { acceptClaudePermissionBoundary: byId('accept-claude-boundary').checked }
+      : {}),
+  };
+}
+
+function showProviderBoundary() {
+  const claude = byId('provider').value === 'claude';
+  byId('claude-boundary').hidden = !claude;
+  if (!claude) byId('accept-claude-boundary').checked = false;
 }
 
 async function performAction(action) {
@@ -172,6 +187,10 @@ async function submitPendingRequest() {
 
 function startRequest(path, body) {
   if (actionBusy || pendingRequest || !connected) return;
+  if (body.provider === 'claude' && body.acceptClaudePermissionBoundary !== true) {
+    showError('Accept the Claude Code permission boundary before using the Claude provider.');
+    return;
+  }
   pendingRequest = { path, body: { requestId: crypto.randomUUID(), ...body } };
   void submitPendingRequest();
 }
@@ -695,6 +714,7 @@ byId('start-form').addEventListener('submit', (event) => {
     ...modelOptions(),
   });
 });
+byId('provider').addEventListener('change', showProviderBoundary);
 byId('retry-request').addEventListener('click', () => {
   if (pendingRequest) void submitPendingRequest();
 });

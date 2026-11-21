@@ -10,7 +10,8 @@ import { FileRunStore } from '../core/store.ts';
 import { hasUncertainTermination } from '../core/errors.ts';
 import { cleanTerminal, redact } from '../core/safety.ts';
 import { Workflow } from '../core/workflow.ts';
-import { CodexModelOptionsSchema, CodexRunner } from '../adapters/codex.ts';
+import { ClaudeRunner } from '../adapters/claude.ts';
+import { AgentSelectionSchema, createAgentRunner, ProviderSchema } from '../adapters/providers.ts';
 import { CodexSandbox } from '../adapters/sandbox.ts';
 import { GitHubCli } from '../adapters/github.ts';
 import { execute } from '../adapters/process.ts';
@@ -21,7 +22,7 @@ function help(version: string): string {
   return `AgentGate ${version} — human-approved Issue-to-PR workflows
 
 Usage:
-  agentgate doctor
+  agentgate doctor [--provider codex|claude]
   agentgate repo add <local-path> [--name <name>] [--checks <checks.json>]
   agentgate run <issue-url> --repo <name>
   agentgate status [run-id] [--json]
@@ -36,16 +37,22 @@ Options:
   --version      Show the installed package version
 
 Run/resume options:
-  --model <id>                 Explicit Codex model identifier
+  --provider <codex|claude>     Agent provider (default: codex)
+  --accept-claude-permission-boundary
+                               Required with --provider claude: Claude Code file tools are
+                               limited by its permission rules, not an OS sandbox
+  --model <id>                 Explicit model identifier for the selected provider
   --reasoning-effort <effort>   low, medium, high, xhigh, or max
-Model options apply to this invocation only; repeat them when resuming a run.
+Provider and model options apply to this invocation only; repeat them when resuming.
+Doctor also accepts --provider and --accept-claude-permission-boundary.
 
 Web options:
   --port <port>   Local IPv4 loopback port (default: 0, choose a free port)
 The web interface uses browser approvals and does not require a terminal.
 Repository registration, check configuration, and cleanup remain CLI commands.
 
-Requires Node.js 24, Git, GitHub CLI, and a verified Codex sandbox.
+Requires Node.js 24, Git, GitHub CLI, and a verified Codex sandbox for checks.
+The Claude provider also requires Claude Code signed in to its separate AgentGate profile.
 Run/repo add/resume/cleanup require an interactive terminal; there is no --yes bypass.
 No merge, deployment, paid API fallback, or automatic dependency installation.
 `;
@@ -70,6 +77,8 @@ export async function main(argv: string[]): Promise<number> {
       checks: { type: 'string' },
       model: { type: 'string' },
       'reasoning-effort': { type: 'string' },
+      provider: { type: 'string' },
+      'accept-claude-permission-boundary': { type: 'boolean' },
       port: { type: 'string' },
     },
   });
@@ -101,9 +110,27 @@ export async function main(argv: string[]): Promise<number> {
     command !== 'resume'
   )
     throw new Error('--model and --reasoning-effort are only supported for run and resume.');
-  const modelOptions = CodexModelOptionsSchema.parse({
+  const acceptBoundary = values['accept-claude-permission-boundary'] === true;
+  if (
+    (values.provider !== undefined || acceptBoundary) &&
+    !['run', 'resume', 'doctor'].includes(command!)
+  )
+    throw new Error(
+      '--provider and --accept-claude-permission-boundary are only supported for run, resume and doctor.',
+    );
+  const provider = ProviderSchema.safeParse(values.provider ?? 'codex');
+  if (!provider.success) throw new Error('--provider must be codex or claude.');
+  if (acceptBoundary && provider.data !== 'claude')
+    throw new Error('--accept-claude-permission-boundary applies only to --provider claude.');
+  if (provider.data === 'claude' && !acceptBoundary && command !== 'doctor')
+    throw new Error(
+      'The Claude provider has no OS-level isolation for its file tools; Claude Code permission rules limit them instead. Pass --accept-claude-permission-boundary to accept this explicitly.',
+    );
+  const selection = AgentSelectionSchema.parse({
     model: values.model,
     reasoningEffort: values['reasoning-effort'],
+    provider: provider.data,
+    ...(acceptBoundary ? { acceptClaudePermissionBoundary: true } : {}),
   });
   const interactive = ['repo', 'run', 'resume', 'cleanup'].includes(command!);
   if (interactive && (!process.stdin.isTTY || !process.stdout.isTTY))
@@ -112,6 +139,11 @@ export async function main(argv: string[]): Promise<number> {
   const store = new FileRunStore(home);
   const sandbox = new CodexSandbox({ home, codexPath: process.env.AGENTGATE_CODEX_PATH });
   const git = new GitHubCli({ home, ghPath: process.env.AGENTGATE_GH_PATH });
+  const providerPaths = {
+    home,
+    codexPath: process.env.AGENTGATE_CODEX_PATH,
+    claudePath: process.env.AGENTGATE_CLAUDE_PATH,
+  };
   const abort = new AbortController();
   const interrupt = () => abort.abort(new Error('Cancelled by the user.'));
   process.on('SIGINT', interrupt);
@@ -126,12 +158,7 @@ export async function main(argv: string[]): Promise<number> {
         sandbox,
         git,
         port,
-        createAgent: (selection) =>
-          new CodexRunner({
-            home,
-            codexPath: process.env.AGENTGATE_CODEX_PATH,
-            ...selection,
-          }),
+        createAgent: (choice) => createAgentRunner(providerPaths, choice),
       });
       try {
         show(
@@ -175,6 +202,14 @@ export async function main(argv: string[]): Promise<number> {
           }
         }
         checks.push(...(await sandbox.doctor(abort.signal)));
+        if (provider.data === 'claude')
+          checks.push(
+            ...(await new ClaudeRunner({
+              home,
+              claudePath: providerPaths.claudePath,
+              acceptPermissionBoundary: acceptBoundary,
+            }).doctor(abort.signal)),
+          );
         if (values.json) show(JSON.stringify(checks, null, 2));
         else
           for (const check of checks)
@@ -259,11 +294,7 @@ export async function main(argv: string[]): Promise<number> {
       sandbox,
       git,
       ui,
-      agent: new CodexRunner({
-        home,
-        codexPath: process.env.AGENTGATE_CODEX_PATH,
-        ...modelOptions,
-      }),
+      agent: createAgentRunner(providerPaths, selection),
     });
     const run =
       command === 'run'

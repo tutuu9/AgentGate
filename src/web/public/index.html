@@ -67,8 +67,14 @@
                 <button id="start-button" class="primary" type="submit">Start run</button>
               </div>
               <details class="model-options">
-                <summary>Model options</summary>
+                <summary>Provider and model options</summary>
                 <div class="model-inputs">
+                  <label
+                    >Provider<select id="provider" name="provider">
+                      <option value="codex" selected>Codex (default)</option>
+                      <option value="claude">Claude Code</option>
+                    </select></label
+                  >
                   <label
                     >Model<input
                       id="model"
@@ -88,6 +94,16 @@
                     </select></label
                   >
                 </div>
+                <label id="claude-boundary" class="boundary" hidden
+                  ><input
+                    id="accept-claude-boundary"
+                    name="accept-claude-boundary"
+                    type="checkbox"
+                  />
+                  I accept that Claude Code has no OS-level isolation for its file tools: Claude
+                  Code permission rules, not an operating-system sandbox, keep it inside the
+                  worktree.</label
+                >
                 <p class="hint">These choices apply to a new run or its next resume only.</p>
               </details>
             </fieldset>
