@@ -2,6 +2,16 @@
 
 User-visible changes and release notes are recorded here.
 
+## Unreleased
+
+### Changed
+
+- The browser interface follows the system dark theme, colors added, removed and hunk lines in diffs, and shows a pending decision above the start form. While a workflow runs, the start form collapses and the selected run no longer repeats the details shown in the decision.
+
+### Fixed
+
+- The browser layout no longer scrolls horizontally on narrow screens when the activity log or a path contains a long line.
+
 ## 0.2.0-beta.1 — 2026-11-21
 
 This beta adds an optional Claude Code provider. Codex remains the default provider, and its behavior is unchanged.

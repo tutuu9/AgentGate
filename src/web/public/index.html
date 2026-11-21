@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
     <title>AgentGate · Local workflows</title>
     <link rel="stylesheet" href="/app.css" />
     <script src="/app.js" defer></script>
@@ -45,8 +45,14 @@
           </div>
         </div>
 
-        <section class="new-run" aria-labelledby="new-run-heading">
+        <section id="operation" class="operation" aria-label="Current operation" hidden></section>
+        <section id="prompt" class="approval" aria-labelledby="prompt-heading" hidden></section>
+
+        <section id="new-run" class="new-run" aria-labelledby="new-run-heading">
           <h2 id="new-run-heading">Start a run</h2>
+          <p id="start-busy" class="hint" hidden>
+            A workflow is in progress. You can start another run when it finishes.
+          </p>
           <form id="start-form">
             <fieldset id="start-fields">
               <div class="start-inputs">
@@ -120,9 +126,6 @@
             <button id="retry-request" type="button">Retry request</button>
           </div>
         </section>
-
-        <section id="operation" class="operation" aria-label="Current operation" hidden></section>
-        <section id="prompt" class="approval" aria-labelledby="prompt-heading" hidden></section>
 
         <section id="selected-run" class="selected-run" aria-labelledby="selected-run-heading">
           <div class="empty-state">

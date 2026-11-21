@@ -118,6 +118,11 @@ function setConnection(ok) {
 
 function applyAvailability() {
   const unavailable = !connected || actionBusy;
+  // While a workflow runs the form is unusable anyway; keep the pending decision in focus.
+  const collapsed = Boolean(state?.busy) && !pendingRequest;
+  byId('new-run').dataset.collapsed = String(collapsed);
+  byId('start-form').hidden = collapsed;
+  byId('start-busy').hidden = !collapsed;
   byId('start-fields').disabled =
     unavailable || Boolean(state?.busy) || !state?.repos.length || Boolean(pendingRequest);
   byId('retry-request').disabled = unavailable;
@@ -318,6 +323,29 @@ function textList(title, values, ordered = false) {
   return section;
 }
 
+function diffLineKind(line) {
+  if (line.startsWith('diff --git') || line.startsWith('index ')) return 'file';
+  if (line.startsWith('+++ ') || line.startsWith('--- ')) return 'file';
+  if (line.startsWith('@@')) return 'hunk';
+  if (line.startsWith('+')) return 'add';
+  if (line.startsWith('-')) return 'del';
+  return 'context';
+}
+
+/** Untrusted diff text stays text: each line is a textContent node with a styling attribute. */
+function diffBlock(diff, placeholder) {
+  if (diff === undefined || diff === null) return element('pre', placeholder, 'diff-output');
+  const block = element('pre', undefined, 'diff-output diff-colored');
+  const lines = element('code', undefined, 'diff-lines');
+  for (const line of diff.replace(/\n$/, '').split('\n')) {
+    const row = element('span', line, 'diff-line');
+    row.dataset.kind = diffLineKind(line);
+    lines.append(row);
+  }
+  block.append(lines);
+  return block;
+}
+
 function report(title, content, open = false) {
   const details = element('details', undefined, 'report');
   details.open = open;
@@ -416,11 +444,9 @@ function publicationContent(prompt) {
   content.append(
     report(
       'Diff',
-      element(
-        'pre',
-        prompt.diff ??
-          'The diff is not available in this prompt. Inspect the approved commit before continuing.',
-        'diff-output',
+      diffBlock(
+        prompt.diff,
+        'The diff is not available in this prompt. Inspect the approved commit before continuing.',
       ),
       true,
     ),
@@ -566,7 +592,9 @@ function renderPrompt(prompt) {
 function renderSelectedRun(view) {
   const cachedDiff = state.busy ? undefined : inspectedDiffs.get(view.run.id);
   const diff = cachedDiff?.diff ?? view.diff;
-  const key = JSON.stringify([view, diff]);
+  // The pending decision above already shows this run's facts; avoid repeating them here.
+  const promptKind = state.prompt?.run.id === view.run.id ? state.prompt.kind : undefined;
+  const key = JSON.stringify([view, diff, promptKind]);
   if (runKey === key) return;
   runKey = key;
   const run = view.run;
@@ -580,6 +608,20 @@ function renderSelectedRun(view) {
   header.append(title, statusBadge(run.status));
   container.append(header);
   if (run.message) container.append(element('p', run.message, 'run-message'));
+  if (promptKind) {
+    container.append(
+      element(
+        'p',
+        'This run is waiting for the decision above, which shows its current details.',
+        'hint',
+      ),
+    );
+    if (promptKind === 'publication' || promptKind === 'ordinary-pr')
+      container.append(metadata([['Worktree', element('code', run.worktree)]]));
+    if (run.plan && promptKind !== 'plan')
+      container.append(report('Approved plan', planContent(run.plan), promptKind === 'prepared'));
+    return;
+  }
   container.append(
     metadata([
       ['Issue', safeLink(run.issue.url, run.issue.url)],
@@ -630,11 +672,9 @@ function renderSelectedRun(view) {
     );
   const diffContent = element('div');
   diffContent.append(
-    element(
-      'pre',
-      diff ??
-        'No diff loaded. An active run exposes its diff when publication is ready; otherwise use Inspect current diff.',
-      'diff-output',
+    diffBlock(
+      diff,
+      'No diff loaded. An active run exposes its diff when publication is ready; otherwise use Inspect current diff.',
     ),
   );
   if (cachedDiff)
