@@ -15,11 +15,12 @@ Include the AgentGate commit/version, operating system, Node.js and Codex versio
 - The human chooses the repository and Issue, approves the plan/checks, and separately approves the exact commit to publish. An Issue or comment never authorizes a run by itself.
 - The trusted controller owns GitHub access, Git publication, stored approvals, and process supervision. Existing `gh` authorization can be broader than the selected repository.
 - The worker's Git worktree separates source changes. The native sandbox, not Git, must enforce filesystem and network restrictions on agent/check commands.
-- Agent/check environments exclude controller tokens, API keys, proxies, and shell injection settings. The Codex profile is authenticated separately through native ChatGPT login; AgentGate does not copy tokens or switch to API billing.
+- Agent/check environments exclude controller tokens, API keys, proxies, and shell injection settings. The Codex profile is authenticated separately through native ChatGPT login; AgentGate does not copy tokens or switch to API billing. The optional Claude Code profile is signed in by the user with native Claude subscription login; API-key sources block it.
+- The explicitly selected Claude Code provider has no OS-level isolation for its file tools. After the user accepts that boundary per invocation, it is limited to file tools inside the worktree by Claude Code's own permission rules. A bypass of those rules is in scope for reports; the absence of an OS sandbox for this provider is a documented limitation ([ADR 009](docs/decisions.md#adr-009-claude-code-provider-behind-an-accepted-permission-boundary)).
 - Repository instructions, model output, and subprocess output are untrusted. Structured responses are validated, changed paths are checked against the plan, and changed source invalidates prior review/check approval.
 - External integrations are disabled by the fixed adapter configuration. Unsupported versions or settings, missing authentication, unproven isolation, and unavailable mandatory checks block execution.
 
-The controller itself is not an untrusted-code sandbox. Do not run AgentGate as administrator merely to bypass a failing requirement. A compromised operating system, an attacker acting as the same OS user, or a compromised Git/gh/Codex binary is outside this boundary. Filesystem checks reduce accidental traversal and link attacks; they do not claim to eliminate all races with a hostile same-user process.
+The controller itself is not an untrusted-code sandbox. Do not run AgentGate as administrator merely to bypass a failing requirement. A compromised operating system, an attacker acting as the same OS user, or a compromised Git/gh/Codex/Claude Code binary is outside this boundary. Filesystem checks reduce accidental traversal and link attacks; they do not claim to eliminate all races with a hostile same-user process.
 
 ## Data and credentials
 

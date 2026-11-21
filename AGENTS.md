@@ -20,6 +20,7 @@ Use Node.js 24 and npm. Run `npm run check` before proposing a change; it runs f
 - Validate external data. Treat issues, repository files, model responses and process output as untrusted input.
 - Never interpolate issue/model text into shell commands. Keep GitHub credentials in the controller, out of agent/check environments.
 - Fail closed when sandbox support, authentication or an approval cannot be established. Never fall back to full access or API billing.
+- The only exception to the sandbox requirement is the explicitly selected Claude Code provider (ADR 009). It runs without OS-level isolation for its file tools only after the user accepts that permission-rule boundary for the invocation. It still fails closed on an unverified version, non-subscription authentication or a missing acceptance. Do not extend this exception to Codex, checks or new providers without a new decision.
 - Use one shared instruction source: edit this file; `CLAUDE.md` imports it.
 - Do not copy source or private data from other projects.
 
