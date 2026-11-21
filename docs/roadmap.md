@@ -25,6 +25,6 @@ Before publication, the release checklist required recording, for the candidate 
 ## After the beta
 
 1. Record an authenticated Issue-to-PR workflow on supported Linux, including publication refusal and recovery in a disposable repository. This is a follow-up for stable release and is nonblocking for the first beta. [Linux workflow #19](https://github.com/tutuu9/AgentGate/issues/19).
-2. Evaluate a Claude Code adapter against the same authentication and permission contract. [Adapter #4](https://github.com/tutuu9/AgentGate/issues/4) and [v0.3 milestone](https://github.com/tutuu9/AgentGate/milestone/3).
+2. ~~Evaluate a Claude Code adapter.~~ Delivered in `0.2.0-beta.1` as an optional provider behind an explicitly accepted permission boundary. Linux compatibility of that provider remains to be recorded. [Adapter #4](https://github.com/tutuu9/AgentGate/issues/4) and [ADR 009](decisions.md#adr-009-claude-code-provider-behind-an-accepted-permission-boundary).
 3. Expand compatibility as measurements support additional Codex versions, macOS or WSL, and richer offline toolchains.
 4. Consider queues, team use, or remote execution if real use justifies the added state and permission requirements.

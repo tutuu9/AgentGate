@@ -2,7 +2,11 @@
 
 User-visible changes and release notes are recorded here.
 
-## Unreleased
+## 0.2.0-beta.1 — 2026-11-21
+
+This beta adds an optional Claude Code provider. Codex remains the default provider, and its behavior is unchanged.
+
+It is published as the [GitHub prerelease `v0.2.0-beta.1`](https://github.com/tutuu9/AgentGate/releases/tag/v0.2.0-beta.1) with `agentgate-0.2.0-beta.1.tgz`. Verify its SHA-256 against the accompanying `SHA256SUMS` before installing with Node.js 24 and npm. The installed `agentgate --version` command reports `0.2.0-beta.1`. [Installation and verification](README.md#install-the-beta-tarball)
 
 ### Added
 
