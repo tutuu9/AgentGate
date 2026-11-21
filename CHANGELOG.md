@@ -2,7 +2,11 @@
 
 User-visible changes and release notes are recorded here.
 
-## Unreleased
+## 0.2.0-beta.2 — 2026-11-21
+
+This beta refines the local browser interface. The workflow, CLI and providers are unchanged from `0.2.0-beta.1`.
+
+It is published as the [GitHub prerelease `v0.2.0-beta.2`](https://github.com/tutuu9/AgentGate/releases/tag/v0.2.0-beta.2) with `agentgate-0.2.0-beta.2.tgz`. Verify its SHA-256 against the accompanying `SHA256SUMS` before installing with Node.js 24 and npm. The installed `agentgate --version` command reports `0.2.0-beta.2`. [Installation and verification](README.md#install-the-beta-tarball)
 
 ### Changed
 

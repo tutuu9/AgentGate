@@ -2,7 +2,7 @@
 
 A local TypeScript controller with CLI and browser interfaces that takes a selected GitHub Issue through an approved plan, isolated coding work, checks, review, and a separately approved pull request.
 
-**Status:** `0.2.0-beta.1` is the latest public beta, available as a [GitHub prerelease](https://github.com/tutuu9/AgentGate/releases/tag/v0.2.0-beta.1) with the CLI and local web interface in one installable tarball. It adds an optional [Claude Code provider](#use-the-claude-code-provider) next to the default Codex provider. [Release notes](CHANGELOG.md) · [Install](#install-the-beta-tarball)
+**Status:** `0.2.0-beta.2` is the latest public beta, available as a [GitHub prerelease](https://github.com/tutuu9/AgentGate/releases/tag/v0.2.0-beta.2) with the CLI and local web interface in one installable tarball. It adds an optional [Claude Code provider](#use-the-claude-code-provider) next to the default Codex provider. [Release notes](CHANGELOG.md) · [Install](#install-the-beta-tarball)
 
 ## Key properties
 
@@ -56,12 +56,12 @@ macOS, GitHub Enterprise hosts, cross-repository forks, hosted workers, and webh
 
 ## Install the beta tarball
 
-Use Node.js 24 and npm. Download `agentgate-0.2.0-beta.1.tgz` and `SHA256SUMS` from the [`v0.2.0-beta.1` prerelease](https://github.com/tutuu9/AgentGate/releases/tag/v0.2.0-beta.1) into an empty directory. The following commands compare the SHA-256 digest and filename before installing into `./agentgate-beta`. [GitHub releases](https://github.com/tutuu9/AgentGate/releases)
+Use Node.js 24 and npm. Download `agentgate-0.2.0-beta.2.tgz` and `SHA256SUMS` from the [`v0.2.0-beta.2` prerelease](https://github.com/tutuu9/AgentGate/releases/tag/v0.2.0-beta.2) into an empty directory. The following commands compare the SHA-256 digest and filename before installing into `./agentgate-beta`. [GitHub releases](https://github.com/tutuu9/AgentGate/releases)
 
 **Windows PowerShell**
 
 ```powershell
-$archive = 'agentgate-0.2.0-beta.1.tgz'
+$archive = 'agentgate-0.2.0-beta.2.tgz'
 $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive -ErrorAction Stop).Hash.ToLowerInvariant()
 $expected = (Get-Content -LiteralPath .\SHA256SUMS -Raw -ErrorAction Stop).TrimEnd()
 if ($expected -cne "$digest  $archive") { throw 'SHA-256 verification failed.' }
@@ -74,14 +74,14 @@ if ($LASTEXITCODE -ne 0) { throw 'Installation failed.' }
 **Ubuntu**
 
 ```sh
-archive=agentgate-0.2.0-beta.1.tgz
+archive=agentgate-0.2.0-beta.2.tgz
 sha256sum "$archive" | diff - SHA256SUMS &&
   npm install --prefix ./agentgate-beta --ignore-scripts "./$archive" &&
   ./agentgate-beta/node_modules/.bin/agentgate --version &&
   ./agentgate-beta/node_modules/.bin/agentgate --help
 ```
 
-`--version` should print `0.2.0-beta.1`. Use that same launcher for the `agentgate` commands below, or add its `node_modules/.bin` directory to your PATH. Installing the tarball can require registry access for its runtime dependency. Once installed, help and version work offline. To run an Issue workflow, configure the separate GitHub and ChatGPT logins below and run `agentgate doctor`.
+`--version` should print `0.2.0-beta.2`. Use that same launcher for the `agentgate` commands below, or add its `node_modules/.bin` directory to your PATH. Installing the tarball can require registry access for its runtime dependency. Once installed, help and version work offline. To run an Issue workflow, configure the separate GitHub and ChatGPT logins below and run `agentgate doctor`.
 
 ## Install from source
 
