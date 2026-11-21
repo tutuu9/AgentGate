@@ -2,11 +2,15 @@
 
 A local TypeScript controller with CLI and browser interfaces that takes a selected GitHub Issue through an approved plan, isolated coding work, checks, review, and a separately approved pull request.
 
-**`0.1.0-beta.1` is the proposed first public beta.** The candidate includes the CLI and local web interface in one installable GitHub prerelease tarball. The maintainer reviews the candidate and its checksum before publication. [Release notes](CHANGELOG.md) · [Release preparation](https://github.com/tutuu9/AgentGate/issues/18)
+**Status:** `0.1.0-beta.1`, the first public beta, is available as a [GitHub prerelease](https://github.com/tutuu9/AgentGate/releases/tag/v0.1.0-beta.1) with the CLI and local web interface in one installable tarball. [Release notes](CHANGELOG.md) · [Install](#install-the-beta-tarball)
 
-Windows MXC has recorded authenticated CLI and browser workflows through draft PR creation, including refusal and recovery. On the supported Ubuntu environment, native checks passed for filesystem and network isolation, process lifecycle, Node compatibility, and offline project checks. These Linux checks ran without authentication or a model call. An authenticated Linux Issue-to-PR run is tracked separately. [Platform evidence](docs/acceptance.md) · [Browser evidence](docs/web-acceptance.md) · [Linux follow-up #19](https://github.com/tutuu9/AgentGate/issues/19)
+## Key properties
 
-Windows uses explicit MXC isolation with networking disabled. The earlier legacy Windows attempt with Codex 0.154.0 failed the outside-file read and loopback-network boundaries; that backend is no longer selected. Every environment must pass the real probes before model execution. See the [acceptance record](docs/acceptance.md) for measured results.
+- **Two human gates.** You approve the plan and its checks before any code is written, then separately approve publication of one exact commit. Merging and deployment stay with you.
+- **Fail-closed sandboxing.** Real filesystem and network probes must pass before any model runs. There is no fallback to full access or a weaker sandbox.
+- **Credentials stay in the controller.** Agents and checks never receive GitHub credentials. Codex uses a separate ChatGPT login; API-key billing is refused.
+- **Durable and recoverable.** Every step is checkpointed. Cancellation preserves work, resume revalidates it, and changed sources invalidate earlier checks and approvals.
+- **One core, two interfaces.** The CLI and the loopback-only browser interface drive the same workflow. See the [architecture](docs/architecture.md) and [design decisions](docs/decisions.md).
 
 ## The workflow
 
@@ -20,6 +24,12 @@ Windows uses explicit MXC isolation with networking disabled. The earlier legacy
 8. Decide yourself whether to mark the PR ready, merge, or deploy.
 
 If draft PRs are unavailable, AgentGate asks again before creating an ordinary PR. The approved branch may already have been pushed at that point. Refusing publication preserves local work.
+
+## Platform status
+
+Windows MXC has recorded authenticated CLI and browser workflows through draft PR creation, including refusal and recovery. On the supported Ubuntu environment, native checks passed for filesystem and network isolation, process lifecycle, Node compatibility, and offline project checks. These Linux checks ran without authentication or a model call. An authenticated Linux Issue-to-PR run is tracked separately. [Platform evidence](docs/acceptance.md) · [Browser evidence](docs/web-acceptance.md) · [Linux follow-up #19](https://github.com/tutuu9/AgentGate/issues/19)
+
+Windows uses explicit MXC isolation with networking disabled. The earlier legacy Windows attempt with Codex 0.154.0 failed the outside-file read and loopback-network boundaries; that backend is no longer selected. Every environment must pass the real probes before model execution. See the [acceptance record](docs/acceptance.md) for measured results.
 
 ## Requirements
 
@@ -45,7 +55,7 @@ macOS, GitHub Enterprise hosts, cross-repository forks, hosted workers, webhooks
 
 ## Install the beta tarball
 
-Use Node.js 24 and npm. Once the maintainer publishes the prerelease, download `agentgate-0.1.0-beta.1.tgz` and `SHA256SUMS` from the same GitHub release into an empty directory. For candidate review, use the exact artifact and checksum identified in the preparation PR. The following commands compare the SHA-256 digest and filename before installing into `./agentgate-beta`. [GitHub releases](https://github.com/tutuu9/AgentGate/releases)
+Use Node.js 24 and npm. Download `agentgate-0.1.0-beta.1.tgz` and `SHA256SUMS` from the [`v0.1.0-beta.1` prerelease](https://github.com/tutuu9/AgentGate/releases/tag/v0.1.0-beta.1) into an empty directory. The following commands compare the SHA-256 digest and filename before installing into `./agentgate-beta`. [GitHub releases](https://github.com/tutuu9/AgentGate/releases)
 
 **Windows PowerShell**
 

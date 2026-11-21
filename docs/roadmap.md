@@ -1,6 +1,6 @@
 # Roadmap and release criteria
 
-`0.1.0-beta.1` is the proposed first public beta. The candidate includes the Codex CLI workflow and the local browser interface. The planned distribution is an installable `.tgz` attached to a GitHub prerelease. The maintainer reviews the version, notes, artifact, and qualification results before deciding whether to publish. [Beta preparation #18](https://github.com/tutuu9/AgentGate/issues/18).
+`0.1.0-beta.1` is the first public beta, published on 2026-11-05 as a [GitHub prerelease](https://github.com/tutuu9/AgentGate/releases/tag/v0.1.0-beta.1). It includes the Codex CLI workflow and the local browser interface, distributed as an installable `.tgz` with a `SHA256SUMS` file. [Beta preparation #18](https://github.com/tutuu9/AgentGate/issues/18).
 
 ## Implemented for the beta
 
@@ -18,9 +18,9 @@ All seven native acceptance criteria were fulfilled in the recorded Windows and 
 
 ## First public beta qualification
 
-The v0.1 release work includes the completed fixes for [publication credential validation #14](https://github.com/tutuu9/AgentGate/issues/14), the [development dependency advisory #15](https://github.com/tutuu9/AgentGate/issues/15), [CLI version reporting #16](https://github.com/tutuu9/AgentGate/issues/16), and [package verification #17](https://github.com/tutuu9/AgentGate/issues/17). The web interface originally tracked under v0.2 is included in this candidate. [v0.1 milestone](https://github.com/tutuu9/AgentGate/milestone/1) and [web milestone](https://github.com/tutuu9/AgentGate/milestone/2).
+The v0.1 release work includes the completed fixes for [publication credential validation #14](https://github.com/tutuu9/AgentGate/issues/14), the [development dependency advisory #15](https://github.com/tutuu9/AgentGate/issues/15), [CLI version reporting #16](https://github.com/tutuu9/AgentGate/issues/16), and [package verification #17](https://github.com/tutuu9/AgentGate/issues/17). The web interface originally tracked under v0.2 is included in this release. [v0.1 milestone](https://github.com/tutuu9/AgentGate/milestone/1) and [web milestone](https://github.com/tutuu9/AgentGate/milestone/2).
 
-For the candidate commit, record `npm run check`, Windows/Ubuntu CI, relevant native evidence, full and production dependency audits, and the repository's branch-protection and private-reporting settings. Review tracked files and the pack manifest, install the tarball in a fresh prefix, and record its filename, version, SHA-256, and source commit for the publication decision. [Release checklist #18](https://github.com/tutuu9/AgentGate/issues/18).
+Before publication, the release checklist required recording, for the candidate commit, `npm run check`, Windows/Ubuntu CI, relevant native evidence, full and production dependency audits, the repository's branch-protection and private-reporting settings, a review of tracked files and the pack manifest, a tarball installation in a fresh prefix, and the tarball's filename, version, SHA-256, and source commit. [Release checklist #18](https://github.com/tutuu9/AgentGate/issues/18).
 
 ## After the beta
 

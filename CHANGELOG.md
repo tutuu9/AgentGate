@@ -2,11 +2,11 @@
 
 User-visible changes and release notes are recorded here.
 
-## 0.1.0-beta.1 (proposed)
+## 0.1.0-beta.1 — 2026-11-05
 
-The first public beta candidate lets you take a GitHub Issue from a local clone to a draft PR using the CLI or a private browser interface. You approve the plan and checks before implementation, then inspect the diff, check results, and independent review before authorizing publication of a specific commit. You can decline publication, keep the candidate locally, and resume the run later.
+The first public beta lets you take a GitHub Issue from a local clone to a draft PR using the CLI or a private browser interface. You approve the plan and checks before implementation, then inspect the diff, check results, and independent review before authorizing publication of a specific commit. You can decline publication, keep the candidate locally, and resume the run later.
 
-The candidate is prepared for a GitHub prerelease as `agentgate-0.1.0-beta.1.tgz`. Verify its SHA-256 against the accompanying `SHA256SUMS` before installing with Node.js 24 and npm. The installed `agentgate --version` command reports `0.1.0-beta.1`. [Installation and verification](README.md#install-the-beta-tarball)
+It is published as the [GitHub prerelease `v0.1.0-beta.1`](https://github.com/tutuu9/AgentGate/releases/tag/v0.1.0-beta.1) with `agentgate-0.1.0-beta.1.tgz`. Verify its SHA-256 against the accompanying `SHA256SUMS` before installing with Node.js 24 and npm. The installed `agentgate --version` command reports `0.1.0-beta.1`. [Installation and verification](README.md#install-the-beta-tarball)
 
 Issue workflows require GitHub CLI login for the controller, a separate ChatGPT login for pinned Codex, and passing live `agentgate doctor` checks. Prepare project dependencies in the worktree before the agent runs. Repository commands run offline, while the controller needs connectivity for GitHub operations and the model requires access to its service. [Setup and prerequisites](README.md#requirements)
 

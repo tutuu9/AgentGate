@@ -1,6 +1,6 @@
 # Local web interface acceptance
 
-The proposed first public beta (`0.1.0-beta.1`) includes the local web interface. On Windows MXC, the installed interface completed a real Issue-to-draft-PR workflow, including publication refusal and restart recovery. [Web implementation #3](https://github.com/tutuu9/AgentGate/issues/3) and [Windows web acceptance #9](https://github.com/tutuu9/AgentGate/issues/9).
+The first public beta ([`0.1.0-beta.1`](https://github.com/tutuu9/AgentGate/releases/tag/v0.1.0-beta.1)) includes the local web interface. On Windows MXC, the installed interface completed a real Issue-to-draft-PR workflow, including publication refusal and restart recovery. [Web implementation #3](https://github.com/tutuu9/AgentGate/issues/3) and [Windows web acceptance #9](https://github.com/tutuu9/AgentGate/issues/9).
 
 On supported Ubuntu, workflows require successful live preflight and separate ChatGPT authentication. The 2026-11-02 native run verified filesystem and network isolation, process lifecycle, Node IPC, and offline toolchain behavior with an unauthenticated profile and no model calls. Recording an authenticated Linux Issue-to-PR run is a follow-up for stable release. [Platform acceptance](acceptance.md) and [Linux workflow follow-up #19](https://github.com/tutuu9/AgentGate/issues/19).
 
